@@ -1,11 +1,7 @@
 package org.thingai.app.aigateway
 
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Contents
-import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.EngineConfig
-import com.google.ai.edge.litertlm.Message
-import com.google.ai.edge.litertlm.SamplerConfig
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import org.thingai.app.aigateway.api.route.registerRoute

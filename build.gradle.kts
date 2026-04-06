@@ -1,5 +1,6 @@
 plugins {
     kotlin("jvm") version "2.3.10"
+    id("io.ktor.plugin") version "3.4.2"
 }
 
 group = "org.thingai.app.aigateway"
@@ -8,6 +9,10 @@ version = "1.0"
 repositories {
     mavenCentral()
     google()
+}
+
+application {
+    mainClass.set("org.thingai.app.aigateway.MainKt")
 }
 
 dependencies {
