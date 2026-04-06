@@ -9,12 +9,24 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import org.thingai.app.aigateway.engine.LiteRTLMEngine
 
 fun Route.conversation() {
     route("/conversations") {
+        get {
+            val handler = LiteRTLMEngine.conversationHandler
+            if (handler == null) {
+                call.respondText("Engine not ready", status = HttpStatusCode.ServiceUnavailable)
+                return@get
+            }
+
+            val conversations = handler.getConversationList()
+            call.respondText(conversations.joinToString(","))
+        }
+
         post("/{name}") {
             val handler = LiteRTLMEngine.conversationHandler
             if (handler == null) {

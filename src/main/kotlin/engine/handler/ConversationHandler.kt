@@ -32,4 +32,8 @@ class ConversationHandler(
         conversation.close()
         return true
     }
+
+    fun getConversationList(): List<String> {
+        return conversationList.keys().toList()
+    }
 }
