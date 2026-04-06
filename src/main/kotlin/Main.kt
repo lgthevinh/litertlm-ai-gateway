@@ -10,7 +10,7 @@ import org.thingai.app.aigateway.engine.LiteRTLMEngine
 
 fun main() {
     LiteRTLMEngine.setEngineConfig(EngineConfig(
-        modelPath = "./model/gemma4-e4b/gemma4-E4B-it.litertlm",
+        modelPath = "/data/model/gemma4-e4b/gemma4-E4B-it.litertlm",
         backend = Backend.CPU()
     ))
 
