@@ -1,7 +1,9 @@
 package org.thingai.app.aigateway.engine.handler
 
-class SessionHandler {
-    constructor() {
+import com.google.ai.edge.litertlm.Engine
 
-    }
+class SessionHandler(
+    private val engine: Engine
+) {
+
 }
