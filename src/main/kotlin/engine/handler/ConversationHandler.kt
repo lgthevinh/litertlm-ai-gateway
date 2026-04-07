@@ -4,6 +4,7 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.Message
+import org.thingai.app.aigateway.engine.define.PreDefineConversationConfig
 import java.util.concurrent.ConcurrentHashMap
 
 class ConversationHandler(
@@ -11,9 +12,8 @@ class ConversationHandler(
 ) {
     private val conversationList = ConcurrentHashMap<String, Conversation>()
 
-    fun createConversation(name: String, conversation: ConversationConfig): Boolean {
-        println("Creating conversation $name")
-        val created = engine.createConversation(conversation)
+    fun createConversation(name: String, config: ConversationConfig = PreDefineConversationConfig.ASSISTANT): Boolean {
+        val created = engine.createConversation(config)
         val existing = conversationList.putIfAbsent(name, created)
         if (existing != null) {
             created.close()

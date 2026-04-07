@@ -9,7 +9,7 @@ import org.thingai.app.aigateway.callback.RequestCallback
 import org.thingai.app.aigateway.engine.handler.ConversationHandler
 import org.thingai.app.aigateway.engine.handler.ToolHandler
 
-object LiteRTLMEngine {
+object LMEngine {
     private var engineConfig: EngineConfig? = null
     private var engine: Engine? = null
 

@@ -12,12 +12,12 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import org.thingai.app.aigateway.engine.LiteRTLMEngine
+import org.thingai.app.aigateway.engine.LMEngine
 
 fun Route.conversation() {
     route("/conversations") {
         get {
-            val handler = LiteRTLMEngine.conversationHandler
+            val handler = LMEngine.conversationHandler
             if (handler == null) {
                 call.respondText("Engine not ready", status = HttpStatusCode.ServiceUnavailable)
                 return@get
@@ -28,7 +28,7 @@ fun Route.conversation() {
         }
 
         post("/{name}") {
-            val handler = LiteRTLMEngine.conversationHandler
+            val handler = LMEngine.conversationHandler
             if (handler == null) {
                 call.respondText("Engine not ready", status = HttpStatusCode.ServiceUnavailable)
                 return@post
@@ -62,7 +62,7 @@ fun Route.conversation() {
         }
 
         post("/{name}/messages") {
-            val handler = LiteRTLMEngine.conversationHandler
+            val handler = LMEngine.conversationHandler
             if (handler == null) {
                 call.respondText("Engine not ready", status = HttpStatusCode.ServiceUnavailable)
                 return@post
@@ -90,7 +90,7 @@ fun Route.conversation() {
         }
 
         delete("/{name}") {
-            val handler = LiteRTLMEngine.conversationHandler
+            val handler = LMEngine.conversationHandler
             if (handler == null) {
                 call.respondText("Engine not ready", status = HttpStatusCode.ServiceUnavailable)
                 return@delete
