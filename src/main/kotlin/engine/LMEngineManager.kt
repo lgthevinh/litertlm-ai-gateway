@@ -7,13 +7,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import org.thingai.app.aigateway.callback.RequestCallback
 import org.thingai.app.aigateway.engine.handler.ConversationHandler
-import org.thingai.app.aigateway.engine.handler.ToolHandler
 
-object LMEngine {
+object LMEngineManager {
     private var engineConfig: EngineConfig? = null
     private var engine: Engine? = null
 
-    var sessionHandler: ToolHandler? = null
     var conversationHandler: ConversationHandler? = null
 
     fun initEngine(callback: RequestCallback<Boolean>? = null) {
@@ -25,7 +23,6 @@ object LMEngine {
                 engine?.close()
                 engine = Engine(engineConfig!!)
                 engine!!.initialize()
-                sessionHandler = ToolHandler(engine!!)
                 conversationHandler = ConversationHandler(engine!!)
                 callback?.onSuccess(true)
             } catch (e: Exception) {

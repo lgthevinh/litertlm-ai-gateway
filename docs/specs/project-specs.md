@@ -13,7 +13,16 @@ LiteRTLM AI Gateway is a Kotlin/JVM service that exposes a lightweight HTTP entr
 - Ktor server (core, Netty) with SLF4J Simple logging.
 - Google AI Edge LiteRTLM JVM SDK.
 
-### Current Features
+### Production Features (Planned)
+- API Key management 
+- Admin dashboard for monitoring and configuration (with authentication), 
+- Conversation management (create, list, delete conversations), store conversation history compact with SQL or file-based storage.
+- Tool execution framework (register tools, execute with context, return results) with conversation binding tools.
+- Rate limiting and usage tracking per API key and conversation.
+- Support for multiple models with LiteRT and LiteRTLM, dynamic model loading and switching.
+- External service integration (e.g. vector databases, knowledge bases) with a plugin architecture for custom connectors.
+
+### Development Milestones
 - Embedded Ktor server on port 8080 with a basic `/` route.
 - LiteRTLM engine configuration (model path, CPU backend) and async initialization.
 - Initial scaffolding for session and conversation handlers.

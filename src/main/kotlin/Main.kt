@@ -6,15 +6,15 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import org.thingai.app.aigateway.api.route.registerRoute
 import org.thingai.app.aigateway.callback.RequestCallback
-import org.thingai.app.aigateway.engine.LMEngine
+import org.thingai.app.aigateway.engine.LMEngineManager
 
 fun main() {
-    LMEngine.setEngineConfig(EngineConfig(
+    LMEngineManager.setEngineConfig(EngineConfig(
         modelPath = "/data/model/gemma4-e4b/gemma-4-E4B-it.litertlm",
         backend = Backend.CPU()
     ))
 
-    LMEngine.initEngine(object: RequestCallback<Boolean> {
+    LMEngineManager.initEngine(object: RequestCallback<Boolean> {
         override fun onSuccess(result: Boolean) {
             println("Engine initialized successfully")
         }
