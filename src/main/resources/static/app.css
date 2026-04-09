@@ -165,10 +165,12 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 /* The page itself fills the viewport — no card padding, no max-width cap */
 #page-conversations {
   max-width: none !important;
+  padding: 0 !important;
+}
+#page-conversations.active {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  padding: 0 !important;
 }
 #page-conversations h1,
 #page-conversations .subtitle { display: none; } /* title lives in the toolbar */
