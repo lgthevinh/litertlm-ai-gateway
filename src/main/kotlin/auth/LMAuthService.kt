@@ -3,6 +3,8 @@ package org.thingai.app.aigateway.auth
 import org.thingai.base.dao.exceptions.DaoException
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
+import java.net.InetAddress
+import java.net.NetworkInterface
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -214,8 +216,12 @@ class LMAuthService(private val dao: DaoSqlite, private val jwtSecret: String) {
      * "local" is never stored in the DB, so this is safe by design —
      * it is a low-privilege dev/UI account, not an admin account.
      */
-    fun issueLocalToken(): LMAuthJwt {
-        ILog.i(TAG, "issueLocalToken: issuing token for local user")
+    fun issueLocalToken(remoteIp: String?): LMAuthJwt? {
+        if (!isHostAddress(remoteIp)) {
+            ILog.w(TAG, "issueLocalToken: rejected non-local address: $remoteIp")
+            return null
+        }
+        ILog.i(TAG, "issueLocalToken: issuing token for local user from $remoteIp")
         return issueTokenPair("local")
     }
 
@@ -296,5 +302,32 @@ class LMAuthService(private val dao: DaoSqlite, private val jwtSecret: String) {
             ILog.e(TAG, "revokeTokenRecord: DB error: ${e.message}")
             false
         }
+    }
+
+    private fun isHostAddress(remoteIp: String?): Boolean {
+        val normalized = normalizeIp(remoteIp)
+        if (normalized.isNullOrBlank()) return false
+        if (normalized.equals("localhost", ignoreCase = true)) return true
+
+        return try {
+            val addr = InetAddress.getByName(normalized)
+            if (addr.isLoopbackAddress || addr.isAnyLocalAddress) return true
+
+            val localAddresses = NetworkInterface.getNetworkInterfaces().toList()
+                .flatMap { it.inetAddresses.toList() }
+                .mapNotNull { normalizeIp(it.hostAddress) }
+                .toSet()
+
+            localAddresses.contains(normalizeIp(addr.hostAddress))
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun normalizeIp(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim().removePrefix("/")
+        val noBrackets = trimmed.removePrefix("[").removeSuffix("]")
+        return noBrackets.substringBefore('%')
     }
 }

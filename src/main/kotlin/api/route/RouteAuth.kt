@@ -1,6 +1,7 @@
 package org.thingai.app.aigateway.api.route
 
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.plugins.origin
 import io.ktor.server.request.receiveText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
@@ -47,7 +48,7 @@ fun Route.auth() {
 
             // "local" is a reserved virtual user — no DB row, no password needed.
             val jwt = if (username == "local") {
-                LMApplication.authService.issueLocalToken()
+                LMApplication.authService.issueLocalToken(call.request.origin.remoteHost)
             } else {
                 val password = req.password?.takeIf { it.isNotBlank() }
                 if (password == null) {
@@ -58,7 +59,12 @@ fun Route.auth() {
             }
 
             if (jwt == null) {
-                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Invalid credentials")), HttpStatusCode.Unauthorized)
+                val msg = if (username == "local") {
+                    "Local login is only allowed from the host device"
+                } else {
+                    "Invalid credentials"
+                }
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, msg)), HttpStatusCode.Unauthorized)
                 return@post
             }
 
