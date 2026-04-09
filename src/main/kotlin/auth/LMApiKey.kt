@@ -9,7 +9,7 @@ data class LMApiKey(
     @DaoColumn(primaryKey = true)
     val id: String,
 
-    @DaoColumn
+    @DaoColumn(unique = true)
     val keyHash: String,
 
     @DaoColumn

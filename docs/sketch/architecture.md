@@ -1,7 +1,8 @@
-# LiteRTLM AI Gateway — Technical Architecture
+# LiteRTLM AI Gateway — Technical Architecture (AI Should not read this)
 
-> Version 0.2 | April 2026
+> Version 0.3 | April 2026
 > Single-instance, on-device AI gateway wrapping Google AI Edge LiteRTLM
+> Storage: DaoSqlite (desktopplatform) | Logging: ILogImpl (desktopplatform) | Cache: LRUCache (applicationbase)
 
 ---
 
@@ -137,8 +138,17 @@ org.thingai.app.aigateway/
 |   +-- UsageRepository.kt               # SQLite persistence
 |
 +-- storage/
-|   +-- Database.kt                       # SQLite connection, schema init, migrations
-|   +-- Tables.kt                         # Exposed table definitions
+|   +-- DatabaseManager.kt                # DaoSqlite lifecycle, schema init, migrations
+|   +-- FileStore.kt                      # DaoFile wrapper for config/state JSON files
+|   +-- entity/                           # @DaoTable / @DaoColumn annotated POJOs
+|       +-- ApiKeyEntity.kt
+|       +-- ConversationRecord.kt
+|       +-- MessageRecord.kt
+|       +-- UsageLogRecord.kt
+|       +-- ModelRegistryRecord.kt
+|
++-- log/
+|   +-- AppLog.kt                         # ILogImpl singleton initializer + tag constants
 |
 +-- config/
 |   +-- AppConfig.kt                      # Typed application config
@@ -188,7 +198,16 @@ enum class Permission {
 
 ```kotlin
 // auth/ApiKeyService.kt
-class ApiKeyService(private val db: Database) {
+class ApiKeyService(private val dao: DaoSqlite) : org.thingai.base.Service() {
+
+    init {
+        name = "ApiKeyService"
+        version = "1.0"
+    }
+
+    override fun onServiceInit() {
+        ILog.i(name, "ApiKeyService ready")
+    }
 
     // Returns the raw key (only time it's visible). Stores hashed.
     fun createKey(name: String, permissions: Set<Permission>,
@@ -319,7 +338,7 @@ For long conversations, storing every message is expensive for reconstruction. T
 
 ```kotlin
 // conversation/ConversationRepository.kt
-class ConversationRepository(private val db: Database) {
+class ConversationRepository(private val dao: DaoSqlite) {
 
     fun create(entity: ConversationEntity)
     fun findById(id: String): ConversationEntity?
@@ -909,7 +928,7 @@ data class UsageRecord(
 )
 
 // usage/UsageService.kt
-class UsageService(private val repository: UsageRepository) {
+class UsageService(private val dao: DaoSqlite) {
 
     // Fire-and-forget recording (non-blocking)
     fun record(record: UsageRecord)
@@ -984,123 +1003,465 @@ All under `/admin/api/*`, protected by `AdminAuthMiddleware`:
 
 #### Technology
 
-**SQLite** via **Exposed** (JetBrains Kotlin SQL framework) with the `xerial/sqlite-jdbc` driver.
+The storage layer is built entirely on the two custom libraries already in `libs/`:
 
-Dependencies:
+| Library | JAR | Role |
+|---------|-----|------|
+| `org.thingai.base.dao.Dao` | `applicationbase.jar` | Abstract DAO interface (CRUD, transactions, queries) |
+| `org.thingai.platform.dao.DaoSqlite` | `desktopplatform.jar` | SQLite implementation backed by **HikariCP** connection pool |
+| `org.thingai.platform.dao.DaoFile` | `desktopplatform.jar` | JSON file read/write for config snapshots and export |
+| `org.thingai.base.dao.annotations.*` | `applicationbase.jar` | `@DaoTable` / `@DaoColumn` for reflective schema mapping |
+
+Both JARs are already declared in `build.gradle.kts`:
 ```kotlin
-implementation("org.jetbrains.exposed:exposed-core:0.61.0")
-implementation("org.jetbrains.exposed:exposed-jdbc:0.61.0")
-implementation("org.xerial:sqlite-jdbc:3.49.1.0")
+implementation(files("libs/applicationbase.jar"))
+implementation(files("libs/desktopplatform.jar"))
 ```
 
-#### Schema
-
-```sql
--- storage/schema.sql (applied programmatically via Exposed)
-
-CREATE TABLE api_keys (
-    id              TEXT PRIMARY KEY,
-    key_hash        TEXT NOT NULL UNIQUE,
-    key_prefix      TEXT NOT NULL,
-    name            TEXT NOT NULL,
-    permissions     TEXT NOT NULL,       -- JSON array: ["CHAT","CONVERSATION"]
-    rate_limit_tier TEXT NOT NULL DEFAULT 'default',
-    active          INTEGER NOT NULL DEFAULT 1,
-    created_at      INTEGER NOT NULL,
-    last_used_at    INTEGER
-);
-
-CREATE TABLE conversations (
-    id                  TEXT PRIMARY KEY,
-    name                TEXT NOT NULL,
-    model_id            TEXT NOT NULL,
-    system_instruction  TEXT NOT NULL,
-    sampler_config      TEXT NOT NULL,   -- JSON: {"topK":10,"topP":0.95,"temperature":0.8}
-    api_key_id          TEXT NOT NULL REFERENCES api_keys(id),
-    created_at          INTEGER NOT NULL,
-    updated_at          INTEGER NOT NULL,
-    message_count       INTEGER NOT NULL DEFAULT 0,
-    active              INTEGER NOT NULL DEFAULT 1
-);
-CREATE INDEX idx_conv_api_key ON conversations(api_key_id);
-
-CREATE TABLE messages (
-    id               TEXT PRIMARY KEY,
-    conversation_id  TEXT NOT NULL REFERENCES conversations(id),
-    role             TEXT NOT NULL,      -- 'user', 'model', 'system', 'tool'
-    content          TEXT NOT NULL,
-    tool_call_id     TEXT,
-    token_count      INTEGER,
-    created_at       INTEGER NOT NULL
-);
-CREATE INDEX idx_msg_conv ON messages(conversation_id, created_at);
-
-CREATE TABLE usage_logs (
-    id               TEXT PRIMARY KEY,
-    api_key_id       TEXT NOT NULL,
-    conversation_id  TEXT,
-    action           TEXT NOT NULL,
-    model_id         TEXT,
-    input_tokens     INTEGER,
-    output_tokens    INTEGER,
-    latency_ms       INTEGER NOT NULL,
-    tool_name        TEXT,
-    success          INTEGER NOT NULL DEFAULT 1,
-    created_at       INTEGER NOT NULL
-);
-CREATE INDEX idx_usage_key ON usage_logs(api_key_id, created_at);
-CREATE INDEX idx_usage_time ON usage_logs(created_at);
-
-CREATE TABLE model_registry (
-    id                  TEXT PRIMARY KEY,
-    name                TEXT NOT NULL,
-    path                TEXT NOT NULL,
-    backend             TEXT NOT NULL DEFAULT 'CPU',
-    cpu_threads         INTEGER,
-    default_sampler     TEXT NOT NULL,   -- JSON
-    max_conversations   INTEGER NOT NULL DEFAULT 10,
-    auto_load           INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE schema_version (
-    version     INTEGER PRIMARY KEY,
-    applied_at  INTEGER NOT NULL
-);
+`DaoSqlite` requires HikariCP and the SQLite JDBC driver (both already present in `build.gradle.kts`):
+```kotlin
+implementation("org.xerial:sqlite-jdbc:3.43.2.0")
+implementation("com.zaxxer:HikariCP:5.1.0")
 ```
 
-#### Database Initialization
+No Exposed ORM dependency is needed.
+
+#### Entity Annotations
+
+All database entities are plain Java-compatible data classes annotated with `@DaoTable` and `@DaoColumn`. The `DaoSqlite` implementation uses reflection to derive table/column names and build DDL automatically via `initDao(Class[])`.
 
 ```kotlin
-// storage/Database.kt
-object DatabaseFactory {
+// storage/entity/ApiKeyRecord.kt
+@DaoTable(name = "api_keys")
+data class ApiKeyRecord(
+    @DaoColumn(name = "id", primaryKey = true, nullable = false)
+    val id: String = "",
 
-    private lateinit var database: org.jetbrains.exposed.sql.Database
+    @DaoColumn(name = "key_hash", nullable = false, unique = true)
+    val keyHash: String = "",
 
+    @DaoColumn(name = "key_prefix", nullable = false)
+    val keyPrefix: String = "",
+
+    @DaoColumn(name = "name", nullable = false)
+    val name: String = "",
+
+    @DaoColumn(name = "permissions", nullable = false)
+    val permissions: String = "",        // JSON: ["CHAT","CONVERSATION"]
+
+    @DaoColumn(name = "rate_limit_tier", nullable = false, defaultValue = "default")
+    val rateLimitTier: String = "default",
+
+    @DaoColumn(name = "active", nullable = false, defaultValue = "1")
+    val active: Int = 1,                 // 1 = active, 0 = revoked
+
+    @DaoColumn(name = "created_at", nullable = false)
+    val createdAt: Long = 0L,
+
+    @DaoColumn(name = "last_used_at", nullable = true)
+    val lastUsedAt: Long? = null
+)
+
+// storage/entity/ConversationRecord.kt
+@DaoTable(name = "conversations")
+data class ConversationRecord(
+    @DaoColumn(name = "id", primaryKey = true, nullable = false)
+    val id: String = "",
+
+    @DaoColumn(name = "name", nullable = false)
+    val name: String = "",
+
+    @DaoColumn(name = "model_id", nullable = false)
+    val modelId: String = "",
+
+    @DaoColumn(name = "system_instruction", nullable = false)
+    val systemInstruction: String = "",
+
+    @DaoColumn(name = "sampler_config", nullable = false)
+    val samplerConfig: String = "",       // JSON snapshot
+
+    @DaoColumn(name = "api_key_id", nullable = false)
+    val apiKeyId: String = "",
+
+    @DaoColumn(name = "created_at", nullable = false)
+    val createdAt: Long = 0L,
+
+    @DaoColumn(name = "updated_at", nullable = false)
+    val updatedAt: Long = 0L,
+
+    @DaoColumn(name = "message_count", nullable = false, defaultValue = "0")
+    val messageCount: Int = 0,
+
+    @DaoColumn(name = "active", nullable = false, defaultValue = "1")
+    val active: Int = 1
+)
+
+// storage/entity/MessageRecord.kt
+@DaoTable(name = "messages")
+data class MessageRecord(
+    @DaoColumn(name = "id", primaryKey = true, nullable = false)
+    val id: String = "",
+
+    @DaoColumn(name = "conversation_id", nullable = false)
+    val conversationId: String = "",
+
+    @DaoColumn(name = "role", nullable = false)           // user | model | system | tool
+    val role: String = "",
+
+    @DaoColumn(name = "content", nullable = false)
+    val content: String = "",
+
+    @DaoColumn(name = "tool_call_id", nullable = true)
+    val toolCallId: String? = null,
+
+    @DaoColumn(name = "token_count", nullable = true)
+    val tokenCount: Int? = null,
+
+    @DaoColumn(name = "created_at", nullable = false)
+    val createdAt: Long = 0L
+)
+
+// storage/entity/UsageLogRecord.kt
+@DaoTable(name = "usage_logs")
+data class UsageLogRecord(
+    @DaoColumn(name = "id", primaryKey = true, nullable = false)
+    val id: String = "",
+
+    @DaoColumn(name = "api_key_id", nullable = false)
+    val apiKeyId: String = "",
+
+    @DaoColumn(name = "conversation_id", nullable = true)
+    val conversationId: String? = null,
+
+    @DaoColumn(name = "action", nullable = false)
+    val action: String = "",              // message | create_conversation | tool_exec | model_switch
+
+    @DaoColumn(name = "model_id", nullable = true)
+    val modelId: String? = null,
+
+    @DaoColumn(name = "input_tokens", nullable = true)
+    val inputTokens: Int? = null,
+
+    @DaoColumn(name = "output_tokens", nullable = true)
+    val outputTokens: Int? = null,
+
+    @DaoColumn(name = "latency_ms", nullable = false)
+    val latencyMs: Long = 0L,
+
+    @DaoColumn(name = "tool_name", nullable = true)
+    val toolName: String? = null,
+
+    @DaoColumn(name = "success", nullable = false, defaultValue = "1")
+    val success: Int = 1,
+
+    @DaoColumn(name = "created_at", nullable = false)
+    val createdAt: Long = 0L
+)
+
+// storage/entity/ModelRegistryRecord.kt
+@DaoTable(name = "model_registry")
+data class ModelRegistryRecord(
+    @DaoColumn(name = "id", primaryKey = true, nullable = false)
+    val id: String = "",
+
+    @DaoColumn(name = "name", nullable = false)
+    val name: String = "",
+
+    @DaoColumn(name = "path", nullable = false)
+    val path: String = "",
+
+    @DaoColumn(name = "backend", nullable = false, defaultValue = "CPU")
+    val backend: String = "CPU",
+
+    @DaoColumn(name = "cpu_threads", nullable = true)
+    val cpuThreads: Int? = null,
+
+    @DaoColumn(name = "default_sampler", nullable = false)
+    val defaultSampler: String = "",      // JSON snapshot
+
+    @DaoColumn(name = "max_conversations", nullable = false, defaultValue = "10")
+    val maxConversations: Int = 10,
+
+    @DaoColumn(name = "auto_load", nullable = false, defaultValue = "0")
+    val autoLoad: Int = 0
+)
+```
+
+#### Database Manager
+
+```kotlin
+// storage/DatabaseManager.kt
+object DatabaseManager {
+
+    private const val TAG = "DatabaseManager"
+    private lateinit var dao: DaoSqlite
+
+    /**
+     * Opens (or creates) the SQLite database at [dbPath] and ensures all
+     * tables exist. DaoSqlite uses HikariCP internally — no extra pool config needed.
+     */
     fun init(dbPath: String = "data/gateway.db") {
-        database = Database.connect(
-            url = "jdbc:sqlite:$dbPath",
-            driver = "org.sqlite.JDBC"
-        )
-
-        transaction(database) {
-            // Create tables if not exist
-            SchemaUtils.create(
-                ApiKeysTable, ConversationsTable, MessagesTable,
-                UsageLogsTable, ModelRegistryTable, SchemaVersionTable
+        ILog.i(TAG, "Initializing database at $dbPath")
+        dao = DaoSqlite(dbPath)
+        dao.initDao(
+            arrayOf(
+                ApiKeyRecord::class.java,
+                ConversationRecord::class.java,
+                MessageRecord::class.java,
+                UsageLogRecord::class.java,
+                ModelRegistryRecord::class.java
             )
-            // Run migrations if needed
-            runMigrations()
-        }
+        )
+        ILog.i(TAG, "Database ready")
     }
 
-    fun <T> query(block: Transaction.() -> T): T =
-        transaction(database, block)
+    fun close() = dao.close()
 
-    // Async variant for non-blocking operations
-    suspend fun <T> suspendQuery(block: Transaction.() -> T): T =
-        newSuspendedTransaction(Dispatchers.IO, database, statement = block)
+    /** Exposes the underlying Dao for repositories. */
+    fun dao(): DaoSqlite = dao
+
+    /**
+     * Executes [block] in a single SQLite transaction.
+     * Wraps Dao.executeTransaction to give callers a Kotlin-friendly API.
+     */
+    fun transaction(block: (Dao) -> Unit) {
+        dao.executeTransaction { it.block(it) }
+    }
 }
 ```
+
+#### Repository Pattern
+
+Each domain module owns a repository that holds a reference to `DatabaseManager.dao()` and calls the `Dao` interface methods directly. There is no ORM query DSL — column/value filtering uses `Dao.query(Class, column, value)` or `Dao.query(Class, columns[], values[])`:
+
+```kotlin
+// conversation/ConversationRepository.kt
+class ConversationRepository(private val dao: DaoSqlite) {
+
+    fun create(record: ConversationRecord) =
+        dao.insert(record)
+
+    fun findById(id: String): ConversationRecord? =
+        dao.query(ConversationRecord::class.java, "id", id).firstOrNull()
+
+    fun findByApiKey(apiKeyId: String): List<ConversationRecord> =
+        dao.query(ConversationRecord::class.java, "api_key_id", apiKeyId).toList()
+
+    fun listActive(): List<ConversationRecord> =
+        dao.query(ConversationRecord::class.java, "active", "1").toList()
+
+    /** Update mutable metadata fields using insertOrUpdate (upsert on primary key). */
+    fun updateMetadata(record: ConversationRecord) =
+        dao.insertOrUpdate(record)
+
+    fun softDelete(id: String) {
+        val existing = findById(id) ?: return
+        dao.insertOrUpdate(existing.copy(active = 0))
+    }
+
+    // ── Messages ────────────────────────────────────────────────────────────
+
+    fun appendMessage(record: MessageRecord) =
+        dao.insert(record)
+
+    /** Returns the [limit] most-recent messages for a conversation. */
+    fun getRecentMessages(conversationId: String, limit: Int = 50): List<MessageRecord> {
+        // Raw SQL via queryRaw for ORDER BY + LIMIT support
+        val sql = """
+            SELECT * FROM messages
+            WHERE conversation_id = '$conversationId'
+            ORDER BY created_at DESC
+            LIMIT $limit
+        """.trimIndent()
+        return dao.queryRaw(sql).map { row -> MessageRecord(
+            id              = row["id"] as String,
+            conversationId  = row["conversation_id"] as String,
+            role            = row["role"] as String,
+            content         = row["content"] as String,
+            toolCallId      = row["tool_call_id"] as? String,
+            tokenCount      = (row["token_count"] as? Number)?.toInt(),
+            createdAt       = (row["created_at"] as Number).toLong()
+        )}.reversed()   // return chronological order
+    }
+
+    fun getMessageCount(conversationId: String): Int {
+        val sql = "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = '$conversationId'"
+        return (dao.queryRaw(sql).firstOrNull()?.get("cnt") as? Number)?.toInt() ?: 0
+    }
+}
+```
+
+#### File Store
+
+`DaoFile` handles JSON files on disk. It is used for:
+
+- **Plugin config snapshots** — a plugin can persist its runtime state as a JSON file
+- **Conversation export** — export a full conversation thread as a portable JSON file
+- **Model registry backup** — write a snapshot of the model registry to a human-readable JSON file for manual editing
+
+```kotlin
+// storage/FileStore.kt
+class FileStore(rootPath: String) {
+
+    private const val TAG = "FileStore"
+    private val file = DaoFile(rootPath)
+
+    /** Read a JSON file relative to rootPath. Returns null if not found. */
+    fun readJson(relativePath: String): String? = try {
+        file.readJsonFile(relativePath)
+    } catch (e: IOException) {
+        ILog.w(TAG, "Could not read $relativePath: ${e.message}")
+        null
+    }
+
+    /** Write a JSON string to a file relative to rootPath. */
+    fun writeJson(relativePath: String, json: String) = try {
+        file.writeJsonFile(relativePath, json)
+    } catch (e: IOException) {
+        ILog.e(TAG, "Could not write $relativePath: ${e.message}")
+    }
+
+    /** Export a conversation to data/exports/<id>.json */
+    fun exportConversation(conversationId: String, json: String) =
+        writeJson("exports/$conversationId.json", json)
+
+    /** Persist a plugin's state snapshot */
+    fun savePluginState(pluginId: String, json: String) =
+        writeJson("plugins/$pluginId.state.json", json)
+
+    fun loadPluginState(pluginId: String): String? =
+        readJson("plugins/$pluginId.state.json")
+}
+```
+
+`FileStore` is constructed once at startup and injected where needed (e.g. `PluginContext`, `AdminService`).
+
+#### In-Memory Conversation Cache
+
+Live `Conversation` objects (LiteRTLM JNI handles) are cached using `LRUCache<String, Conversation>` from `applicationbase.jar`. When the cache is full the least-recently-used conversation is evicted; its state remains in SQLite and will be cold-reconstructed on next access.
+
+```kotlin
+// engine/handler/ConversationHandler.kt  (updated)
+class ConversationHandler(private val engine: Engine) {
+
+    // LRUCache(maxSize, backingMap) — use ConcurrentHashMap as the backing store
+    private val cache: LRUCache<String, Conversation> =
+        LRUCache(MAX_LIVE_CONVERSATIONS, ConcurrentHashMap())
+
+    companion object {
+        const val MAX_LIVE_CONVERSATIONS = 20
+    }
+
+    fun get(id: String): Conversation? = cache.get(id)
+    fun put(id: String, conv: Conversation) = cache.put(id, conv)
+    fun evict(id: String): Conversation? = cache.remove(id)
+    fun contains(id: String): Boolean = cache.containsKey(id)
+    fun closeAll() {
+        // LRUCache has no iterator, so evict tracked keys from a parallel set
+        // (tracked by ConversationService)
+    }
+}
+```
+
+---
+
+### 3.9 Logging
+
+#### Library
+
+All logging uses `org.thingai.base.log.ILog` (abstract, from `applicationbase.jar`) with the concrete `org.thingai.platform.log.ILogImpl` (from `desktopplatform.jar`).
+
+`ILog` exposes four **static** methods callable from anywhere without an instance reference:
+
+```java
+// org.thingai.base.log.ILog  (Java source)
+ILog.d(tag, ...messages)   // DEBUG
+ILog.i(tag, ...messages)   // INFO
+ILog.w(tag, ...messages)   // WARN
+ILog.e(tag, ...messages)   // ERROR
+```
+
+`ILogImpl` is the singleton implementation. It writes log entries asynchronously via a `BlockingQueue<String>` + a dedicated writer thread, with optional file output:
+
+```kotlin
+// Constructor: ILogImpl(logDirectory: String, enableFileLogging: Boolean)
+// Static factories:
+ILogImpl.initialize()                           // defaults: no file logging
+ILogImpl.initialize(logDirectory, enableFileLogging)
+```
+
+#### Initialization (`log/AppLog.kt`)
+
+```kotlin
+// log/AppLog.kt
+object AppLog {
+
+    // Tag constants — avoids stringly-typed tag strings throughout the codebase
+    const val TAG_MAIN          = "Main"
+    const val TAG_ENGINE        = "EngineManager"
+    const val TAG_CONVERSATION  = "ConversationService"
+    const val TAG_AUTH          = "ApiKeyService"
+    const val TAG_RATELIMIT     = "RateLimiter"
+    const val TAG_USAGE         = "UsageService"
+    const val TAG_TOOL          = "ToolExecutor"
+    const val TAG_PLUGIN        = "PluginRegistry"
+    const val TAG_STORAGE       = "DatabaseManager"
+    const val TAG_ADMIN         = "AdminService"
+
+    /**
+     * Call once at server startup, before any other module initializes.
+     * [logDir] is the directory for rotating log files (e.g. "data/logs").
+     * [fileLogging] enables log-file output in addition to console.
+     */
+    fun init(logDir: String = "data/logs", fileLogging: Boolean = true) {
+        ILogImpl.initialize(logDir, fileLogging)
+        ILog.logLevel = ILog.INFO     // DEBUG | INFO | WARN | ERROR
+        ILog.ENABLE_LOGGING = true
+        ILog.i(TAG_MAIN, "Logging initialized. File logging=$fileLogging, dir=$logDir")
+    }
+}
+```
+
+#### Usage Pattern
+
+Every class uses its own tag constant and the static `ILog.*` methods. No logger field injection required:
+
+```kotlin
+// Example in ConversationService
+import org.thingai.app.aigateway.log.AppLog.TAG_CONVERSATION
+import org.thingai.base.log.ILog
+
+class ConversationService(...) {
+
+    fun createConversation(name: String, modelId: String, ...): ConversationEntity {
+        ILog.i(TAG_CONVERSATION, "Creating conversation: name=$name, model=$modelId")
+        // ...
+    }
+
+    suspend fun sendMessage(conversationId: String, text: String): MessageEntity {
+        ILog.d(TAG_CONVERSATION, "sendMessage: conv=$conversationId, len=${text.length}")
+        try {
+            // ...
+        } catch (e: Exception) {
+            ILog.e(TAG_CONVERSATION, "sendMessage failed: ${e.message}")
+            throw e
+        }
+    }
+}
+```
+
+#### Log File Behavior
+
+`ILogImpl` auto-generates rotating log file names using `LOG_FILE_PREFIX` + date (`yyyy-MM-dd`) + `.log` extension. Files are written in the configured `logDirectory`. The internal queue prevents log calls from blocking inference threads.
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| `ILog.logLevel` | `INFO` | Minimum level written to output |
+| `ILog.ENABLE_LOGGING` | `true` | Master on/off switch |
+| `enableFileLogging` | `true` | Write to rotating file in `data/logs/` |
+| `ILogImpl.setEnableFileLogging(bool)` | — | Toggle file logging at runtime (admin API) |
+
+> **SLF4J note:** The existing `org.slf4j:slf4j-simple` dependency in `build.gradle.kts` can be removed once `ILogImpl` is wired up. Ktor's own internal logs (which use SLF4J) can be bridged with `slf4j-nop` or a minimal adapter if console noise is unwanted.
 
 ---
 
@@ -1371,52 +1732,78 @@ Error example:
 | Admin access | Separate token, configurable via env var (`ADMIN_TOKEN`). Disabled if unset. |
 | Input validation | All route handlers validate parameters before processing. Max message length enforced. |
 | Resource exhaustion | Rate limiting per key. Max conversations per key. Idle conversation eviction. |
-| SQLite injection | Exposed ORM uses parameterized queries exclusively. |
+| SQLite injection | `DaoSqlite` uses parameterized queries exclusively (via JDBC `PreparedStatement`). |
 | Model path traversal | Model paths validated against allowed directory at registration time. |
 | Plugin isolation | Plugins run in-process but receive a scoped `PluginContext` with controlled access. |
 
 ---
 
-## 8. New Dependencies
+## 8. Dependencies
+
+### Already in `build.gradle.kts` (no changes needed)
 
 ```kotlin
-// build.gradle.kts additions
+// Google AI Edge LiteRTLM
+implementation("com.google.ai.edge.litertlm:litertlm-jvm:0.10.0")
 
-// JSON serialization
-implementation("io.ktor:ktor-server-content-negotiation-jvm:3.4.2")
-implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:3.4.2")
-implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+// Ktor Server
+implementation("io.ktor:ktor-server-core-jvm:3.4.2")
+implementation("io.ktor:ktor-server-netty-jvm:3.4.2")
 
-// SSE for live dashboard updates
-implementation("io.ktor:ktor-server-sse-jvm:3.4.2")
+// Custom platform libraries (storage + logging)
+implementation(files("libs/applicationbase.jar"))   // Dao, ILog, LRUCache, Service
+implementation(files("libs/desktopplatform.jar"))   // DaoSqlite, DaoFile, ILogImpl
 
-// Static file serving for admin SPA
-implementation("io.ktor:ktor-server-static-resources-jvm:3.4.2")
+// SQLite JDBC + HikariCP (required by DaoSqlite)
+implementation("org.xerial:sqlite-jdbc:3.43.2.0")
+implementation("com.zaxxer:HikariCP:5.1.0")
 
-// HOCON config
-implementation("io.ktor:ktor-server-config-yaml-jvm:3.4.2")
-
-// SQLite persistence
-implementation("org.jetbrains.exposed:exposed-core:0.61.0")
-implementation("org.jetbrains.exposed:exposed-jdbc:0.61.0")
-implementation("org.xerial:sqlite-jdbc:3.49.1.0")
-
-// Coroutines (already transitive via Ktor, but explicit for clarity)
-implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
-
-// Testing
-testImplementation("io.ktor:ktor-server-test-host-jvm:3.4.2")
-testImplementation("io.ktor:ktor-client-content-negotiation-jvm:3.4.2")
+// JSON serialization (already using Gson; switch to kotlinx if preferred)
+implementation("com.google.code.gson:gson:2.13.2")
 ```
 
-Also add the Kotlin serialization plugin:
+### New additions required
+
 ```kotlin
+// build.gradle.kts — additions
+
 plugins {
     kotlin("jvm") version "2.3.10"
-    kotlin("plugin.serialization") version "2.3.10"
+    kotlin("plugin.serialization") version "2.3.10"   // ADD: for @Serializable DTOs
     id("io.ktor.plugin") version "3.4.2"
 }
+
+dependencies {
+    // JSON serialization for API DTOs and config snapshots
+    implementation("io.ktor:ktor-server-content-negotiation-jvm:3.4.2")
+    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:3.4.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+
+    // SSE for live dashboard events
+    implementation("io.ktor:ktor-server-sse-jvm:3.4.2")
+
+    // Static file serving for admin SPA
+    implementation("io.ktor:ktor-server-static-resources-jvm:3.4.2")
+
+    // Coroutines (transitive via Ktor, explicit for clarity)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+
+    // Testing
+    testImplementation("io.ktor:ktor-server-test-host-jvm:3.4.2")
+    testImplementation("io.ktor:ktor-client-content-negotiation-jvm:3.4.2")
+}
 ```
+
+> **Note:** `org.slf4j:slf4j-simple` (currently in `build.gradle.kts`) can be replaced with `slf4j-nop` once `ILogImpl` is the primary logger, since Ktor's SLF4J log calls will be silenced in favour of `ILog`.
+
+### Dependencies NOT needed (compared to a greenfield Kotlin project)
+
+| Dependency | Reason not needed |
+|------------|-------------------|
+| `org.jetbrains.exposed:exposed-core` | `DaoSqlite` replaces Exposed ORM |
+| `org.jetbrains.exposed:exposed-jdbc` | Same |
+| `org.jetbrains.exposed:exposed-coroutines` | Same |
+| Any structured-logging framework | `ILogImpl` handles logging |
 
 ---
 

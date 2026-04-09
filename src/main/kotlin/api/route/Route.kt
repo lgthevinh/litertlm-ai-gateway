@@ -7,5 +7,6 @@ fun Application.registerRoute() {
     routing {
         config()
         conversation()
+        apiKey()
     }
 }

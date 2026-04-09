@@ -3,13 +3,18 @@ package org.thingai.app.aigateway
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.EngineConfig
 import org.thingai.app.aigateway.auth.LMApiKey
+import org.thingai.app.aigateway.auth.LMApiKeyService
 import org.thingai.app.aigateway.callback.RequestCallback
 import org.thingai.app.aigateway.engine.LMEngineManager
 import org.thingai.base.Service
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
 
-class LMApplication: Service() {
+object LMApplication: Service() {
+
+    lateinit var apiKeyService: LMApiKeyService
+        private set
+
     init {
         name = "LMApplication"
         appDirName = "lm_application"
@@ -27,9 +32,11 @@ class LMApplication: Service() {
             )
         )
 
+        apiKeyService = LMApiKeyService(dao)
+
         LMEngineManager.setEngineConfig(EngineConfig(
-            modelPath = "/data/model/gemma4-e4b/gemma-4-E4B-it.litertlm",
-            backend = Backend.CPU()
+            modelPath = "./model/gemma4-e4b/gemma-4-E4B-it.litertlm",
+            backend = Backend.GPU()
         ))
 
         LMEngineManager.initEngine(object: RequestCallback<Boolean> {
