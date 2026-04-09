@@ -23,6 +23,14 @@ dependencies {
     implementation("io.ktor:ktor-server-core-jvm:3.4.2")
     implementation("io.ktor:ktor-server-netty-jvm:3.4.2")
     implementation("org.slf4j:slf4j-simple:2.0.17") // For KTor
+
+    implementation(files("libs/applicationbase.jar"))
+    implementation(files("libs/desktopplatform.jar"))
+
+    // appbase and desktopplatform dependencies
+    implementation("org.xerial:sqlite-jdbc:3.43.2.0")
+    implementation("com.zaxxer:HikariCP:5.1.0")
+    implementation("com.google.code.gson:gson:2.13.2")
 }
 
 kotlin {
