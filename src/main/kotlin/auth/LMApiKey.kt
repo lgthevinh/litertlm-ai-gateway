@@ -27,3 +27,12 @@ data class LMApiKey(
     @DaoColumn
     val lastUsedAt: Long?
 )
+
+/**
+ * Returned by [LMApiKeyService.generateApiKey].
+ * [rawKey] is the only time the unmasked key is accessible — store it immediately.
+ */
+data class LMApiKeyResult(
+    val apiKey: LMApiKey,
+    val rawKey: String
+)

@@ -175,12 +175,3 @@ class LMApiKeyService(private val dao: DaoSqlite) {
         }
     }
 }
-
-/**
- * Returned by [LMApiKeyService.generateApiKey].
- * [rawKey] is the only time the unmasked key is accessible — store it immediately.
- */
-data class LMApiKeyResult(
-    val apiKey: LMApiKey,
-    val rawKey: String
-)

@@ -7,6 +7,7 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
+import org.thingai.app.aigateway.api.plugin.AuthPlugin
 import org.thingai.app.aigateway.LMApplication
 import org.thingai.app.aigateway.api.route.dto.ApiErrorResponse
 import org.thingai.app.aigateway.api.route.dto.ApiKeyInfo
@@ -20,6 +21,7 @@ import org.thingai.app.aigateway.utils.JsonUtils
 
 fun Route.apiKey() {
     route("/api-key") {
+        install(AuthPlugin)
 
         // POST /api-key/generate
         // Body (optional JSON): { "name": "my-client" }

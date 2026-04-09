@@ -45,3 +45,6 @@ bin/
 .DS_Store
 
 model/
+
+### Environment ###
+.env

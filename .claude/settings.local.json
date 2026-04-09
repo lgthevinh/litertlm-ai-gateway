@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(jar tf:*)",
+      "Bash(cd /tmp)",
+      "Bash(jar xf:*)",
+      "Bash(javap -p org/thingai/platform/dao/DaoSqlite.class)",
+      "Bash(javap -p org/thingai/platform/dao/DaoFile.class)",
+      "Bash(javap -p org/thingai/platform/log/ILogImpl.class)"
+    ]
+  }
+}

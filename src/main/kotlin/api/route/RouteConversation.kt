@@ -2,7 +2,6 @@ package org.thingai.app.aigateway.api.route
 
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
-import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receiveText
@@ -18,12 +17,14 @@ import org.thingai.app.aigateway.api.route.dto.ListConversationsResponse
 import org.thingai.app.aigateway.api.route.dto.OkResponse
 import org.thingai.app.aigateway.api.route.dto.SendMessageRequest
 import org.thingai.app.aigateway.api.route.dto.SendMessageResponse
+import org.thingai.app.aigateway.api.plugin.DualAuthPlugin
 import org.thingai.app.aigateway.engine.LMEngineManager
 import org.thingai.app.aigateway.engine.predefine.BuiltinConversationConfig
 import org.thingai.app.aigateway.utils.JsonUtils
 
 fun Route.conversation() {
     route("/conversations") {
+        install(DualAuthPlugin)
 
         // GET /conversations
         // Response 200: { "ok": true, "conversations": ["chat1", "chat2"] }
@@ -75,7 +76,7 @@ fun Route.conversation() {
             val resolvedConfig = req.systemInstruction?.trim()?.takeIf { it.isNotBlank() }?.let { instruction ->
                 ConversationConfig(
                     systemInstruction = Contents.of(instruction),
-                    initialMessages   = emptyList<Message>(),
+                    initialMessages   = emptyList(),
                     samplerConfig     = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.8)
                 )
             } ?: presetByName(req.config)
