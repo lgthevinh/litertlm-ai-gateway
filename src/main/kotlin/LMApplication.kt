@@ -56,7 +56,7 @@ object LMApplication : Service() {
         LMEngineManager.setEngineConfig(
             EngineConfig(
                 modelPath = "./model/gemma4-e4b/gemma-4-E4B-it.litertlm",
-                backend = Backend.GPU()
+                backend = Backend.CPU()
             )
         )
 

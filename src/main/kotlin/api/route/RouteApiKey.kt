@@ -30,7 +30,7 @@ fun Route.apiKey() {
         post("/generate") {
             val body = call.receiveText().trim()
             val name = if (body.isNotEmpty()) {
-                runCatching { JsonUtils.fromJson(body, GenerateKeyRequest::class.java)?.name }
+                runCatching { JsonUtils.fromJson(body, GenerateKeyRequest::class.java).name }
                     .getOrNull()
                     ?.takeIf { it.isNotBlank() }
                     ?: "default"
@@ -85,7 +85,7 @@ fun Route.apiKey() {
                 return@delete
             }
 
-            val rawKey = runCatching { JsonUtils.fromJson(body, RevokeKeyRequest::class.java)?.key }
+            val rawKey = runCatching { JsonUtils.fromJson(body, RevokeKeyRequest::class.java).key }
                 .getOrNull()
                 ?.takeIf { it.isNotBlank() }
 

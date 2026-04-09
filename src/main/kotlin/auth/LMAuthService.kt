@@ -209,6 +209,55 @@ class LMAuthService(private val dao: DaoSqlite, private val jwtSecret: String) {
         return claims["sub"]
     }
 
+    /**
+     * Issues a JWT pair for the reserved "local" user without any credential check.
+     * "local" is never stored in the DB, so this is safe by design —
+     * it is a low-privilege dev/UI account, not an admin account.
+     */
+    fun issueLocalToken(): LMAuthJwt {
+        ILog.i(TAG, "issueLocalToken: issuing token for local user")
+        return issueTokenPair("local")
+    }
+
+    /**
+     * Returns all registered users sorted by creation time (newest first).
+     * The "local" virtual user is excluded since it has no DB row.
+     */
+    fun listUsers(): List<LMAuthUser> {
+        return try {
+            dao.readAll(LMAuthUser::class.java)
+                .sortedByDescending { it.createdAt }
+        } catch (e: DaoException) {
+            ILog.e(TAG, "listUsers: DB error: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Deletes a user and revokes all their active refresh tokens.
+     * @return `true` if the user existed and was deleted, `false` otherwise.
+     */
+    fun deleteUser(username: String): Boolean {
+        val trimmed = username.trim()
+        if (trimmed == "local") return false   // "local" is virtual, cannot be deleted
+
+        val user = dao.query(LMAuthUser::class.java, "username", trimmed).firstOrNull()
+            ?: return false
+
+        return try {
+            // Revoke all refresh tokens for this user
+            val tokens = dao.query(LMAuthToken::class.java, "username", trimmed)
+            tokens.forEach { dao.insertOrUpdate(it.copy(revoked = 1)) }
+
+            dao.delete(user)
+            ILog.i(TAG, "deleteUser: '$trimmed' deleted, ${tokens.size} token(s) revoked")
+            true
+        } catch (e: DaoException) {
+            ILog.e(TAG, "deleteUser: DB error: ${e.message}")
+            false
+        }
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
 
     private fun issueTokenPair(username: String): LMAuthJwt {

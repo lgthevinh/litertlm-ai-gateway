@@ -1,19 +1,24 @@
 package org.thingai.app.aigateway.api.route
 
 import io.ktor.server.application.Application
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 
 fun Application.registerRoute() {
     routing {
-        // Public — no auth required
-        auth()
+        // UI — no prefix, no auth
         config()
 
-        // Protected — AuthPlugin installed inside each extension
-        conversation()
-        apiKey()
+        route("/api") {
+            // Public
+            auth()
 
-        // WebSocket — auth via ?token= query parameter
+            // Protected — AuthPlugin / DualAuthPlugin installed inside each extension
+            conversation()
+            apiKey()
+        }
+
+        // WebSocket — separate from /api prefix to keep WS URLs clean
         conversationWebSocket()
     }
 }
