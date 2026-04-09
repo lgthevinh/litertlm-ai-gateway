@@ -14,6 +14,7 @@ import org.thingai.app.aigateway.api.route.dto.LogoutRequest
 import org.thingai.app.aigateway.api.route.dto.OkResponse
 import org.thingai.app.aigateway.api.route.dto.RefreshRequest
 import org.thingai.app.aigateway.api.route.dto.RefreshResponse
+import org.thingai.app.aigateway.api.route.extension.respondJson
 import org.thingai.app.aigateway.utils.JsonUtils
 
 fun Route.auth() {

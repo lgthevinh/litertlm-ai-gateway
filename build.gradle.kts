@@ -23,6 +23,7 @@ dependencies {
     implementation("io.ktor:ktor-server-core-jvm:3.4.2")
     implementation("io.ktor:ktor-server-netty-jvm:3.4.2")
     implementation("org.slf4j:slf4j-simple:2.0.17") // For KTor
+    implementation("io.ktor:ktor-server-websockets:3.4.2")
 
     implementation(files("libs/applicationbase.jar"))
     implementation(files("libs/desktopplatform.jar"))

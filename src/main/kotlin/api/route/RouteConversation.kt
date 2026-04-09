@@ -18,6 +18,7 @@ import org.thingai.app.aigateway.api.route.dto.OkResponse
 import org.thingai.app.aigateway.api.route.dto.SendMessageRequest
 import org.thingai.app.aigateway.api.route.dto.SendMessageResponse
 import org.thingai.app.aigateway.api.plugin.DualAuthPlugin
+import org.thingai.app.aigateway.api.route.extension.respondJson
 import org.thingai.app.aigateway.engine.LMEngineManager
 import org.thingai.app.aigateway.engine.predefine.BuiltinConversationConfig
 import org.thingai.app.aigateway.utils.JsonUtils

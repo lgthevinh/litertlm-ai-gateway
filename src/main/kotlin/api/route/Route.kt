@@ -12,5 +12,8 @@ fun Application.registerRoute() {
         // Protected — AuthPlugin installed inside each extension
         conversation()
         apiKey()
+
+        // WebSocket — auth via ?token= query parameter
+        conversationWebSocket()
     }
 }

@@ -1,4 +1,4 @@
-package org.thingai.app.aigateway.api.route
+package org.thingai.app.aigateway.api.route.extension
 
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
