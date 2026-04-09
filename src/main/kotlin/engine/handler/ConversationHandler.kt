@@ -12,11 +12,18 @@ import kotlinx.coroutines.flow.flowOn
 import org.thingai.app.aigateway.engine.predefine.BuiltinConversationConfig
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+    * Update soon: Due to each engine can only support one conversation, currently research on session, session handler...
+ */
 class ConversationHandler(
     private val engine: Engine,
 ) {
     private val conversationList = ConcurrentHashMap<String, Conversation>()
 
+    /**
+     * Creates a new conversation with the given name and config, and adds it to the list.
+     * Only one conversation per engine is currently supported
+     */
     fun createConversation(name: String, config: ConversationConfig = BuiltinConversationConfig.ASSISTANT): Boolean {
         val created = engine.createConversation(config)
         val existing = conversationList.putIfAbsent(name, created)
