@@ -120,10 +120,11 @@ function showPage(name) {
   document.getElementById('page-' + name)?.classList.add('active');
   document.querySelector('nav a[data-page="' + name + '"]')?.classList.add('active');
 
+  // Reset scroll on every page switch so every page starts at the top
+  document.querySelector('main')?.scrollTo({ top: 0 });
+
   if (name === 'conversations') loadConversations();
   if (name === 'apikeys')       loadApiKeys();
-  if (name === 'docs')          initDocsSectionNav();
-  // 'docs' is static — no data loading needed
 }
 
 // ═══════════════════════════════════════════════════════════════════════

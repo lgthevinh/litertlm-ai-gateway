@@ -1,36 +1,26 @@
 package org.thingai.app.aigateway.lm.tool
 
-import com.google.gson.JsonObject
+import com.google.ai.edge.litertlm.OpenApiTool
 
 /**
  * A gateway-level tool that the model can invoke during inference.
  *
- * Implementations are registered in [ToolRegistry] and bridged to LiteRTLM's
- * native `InternalJsonTool` interface via [GatewayToolProvider].
+ * Extends [OpenApiTool] so it can be passed directly to the LiteRTLM SDK via
+ * the top-level `tool(openApiTool)` function.
+ *
+ * Implementations must provide:
+ * - [name] — unique identifier used in [ToolRegistry] and stored in the DB
+ * - [getToolDescriptionJsonString] — OpenAPI-compatible JSON schema the model reads
+ * - [execute] — called by the SDK with a JSON params string, must return a JSON string
  *
  * ## Error handling
- *
- * Never throw from [execute]. The SDK calls this synchronously inside
- * `ToolManager.execute()` — an unhandled exception may corrupt inference state.
- * Instead, return a descriptive error string:
+ * Never throw from [execute]. Return a JSON error string instead:
+ * ```json
+ * {"error": "missing required parameter 'expression'"}
  * ```
- * "Error: missing required parameter 'expression'"
- * ```
- * The model receives this as the tool result and can respond accordingly.
  */
-interface GatewayTool {
+interface GatewayTool : OpenApiTool {
 
-    /** Describes the tool's name, purpose, and parameter schema. */
-    val descriptor: ToolDescriptor
-
-    /**
-     * Executes the tool with the parameters the model supplied.
-     *
-     * Called synchronously on the SDK inference thread.
-     * Return a [String] for simple results — the SDK serializes it back to the model.
-     *
-     * @param params JSON object of named parameters as supplied by the model.
-     * @return The result to feed back to the model. Typically a plain [String].
-     */
-    fun execute(params: JsonObject): Any?
+    /** Unique name used to look up this tool in [ToolRegistry]. */
+    val name: String
 }

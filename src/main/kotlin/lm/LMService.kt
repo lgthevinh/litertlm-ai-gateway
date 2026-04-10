@@ -103,6 +103,6 @@ object LMService {
     private fun registerBuiltinTools() {
         ToolRegistry.register(DateTimeTool())
         ToolRegistry.register(CalculatorTool())
-        ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.list().size} tools registered")
+        ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.listAll().size} tools registered")
     }
 }

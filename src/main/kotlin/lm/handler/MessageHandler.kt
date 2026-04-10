@@ -7,7 +7,6 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import org.thingai.app.aigateway.engine.entity.LMStoredConversation
 import org.thingai.app.aigateway.engine.entity.LMStoredMessage
 import org.thingai.app.aigateway.engine.predefine.BuiltinConversationConfig
-import org.thingai.app.aigateway.lm.tool.GatewayToolProvider
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
 import org.thingai.base.dao.exceptions.DaoException
 import org.thingai.base.log.ILog
@@ -214,8 +213,8 @@ class MessageHandler(private val dao: DaoSqlite) {
      * - If [LMStoredConversation.systemInstruction] is set -> use it directly
      * - Otherwise -> derive system instruction from the builtin preset label
      * - Sampler always uses the stored [topK]/[topP]/[temperature] values
-     * - If [LMStoredConversation.tools] is non-blank, resolve tool names via [ToolRegistry],
-     *   wrap them in a [GatewayToolProvider], and enable [automaticToolCalling].
+     * - If [LMStoredConversation.tools] is non-blank, resolve tool names via [ToolRegistry]
+     *   using the SDK `tool()` function and enable [automaticToolCalling].
      */
     private fun buildConversationConfig(
         record: LMStoredConversation,
@@ -224,19 +223,18 @@ class MessageHandler(private val dao: DaoSqlite) {
         val systemInstruction = record.systemInstruction?.takeIf { it.isNotBlank() }
             ?: builtinInstruction(record.configLabel)
 
-        // Resolve tool names to registered GatewayTool instances
+        // Resolve tool names → List<ToolProvider> via ToolRegistry + SDK tool()
         val toolNames = record.tools
             ?.split(",")
             ?.map { it.trim() }
             ?.filter { it.isNotBlank() }
             ?: emptyList()
 
-        val gatewayTools = if (toolNames.isNotEmpty()) ToolRegistry.getAll(toolNames) else emptyList()
-        val toolProviders = if (gatewayTools.isNotEmpty()) listOf(GatewayToolProvider(gatewayTools)) else emptyList()
-        val autoToolCalling = gatewayTools.isNotEmpty()
+        val toolProviders = if (toolNames.isNotEmpty()) ToolRegistry.getToolProviders(toolNames) else emptyList()
+        val autoToolCalling = toolProviders.isNotEmpty()
 
         if (toolNames.isNotEmpty()) {
-            ILog.d(TAG, "buildConversationConfig: tools requested=${toolNames}, resolved=${gatewayTools.map { it.descriptor.name }}, autoToolCalling=$autoToolCalling")
+            ILog.d(TAG, "buildConversationConfig: tools=$toolNames resolved=${toolProviders.size} autoToolCalling=$autoToolCalling")
         }
 
         return ConversationConfig(
