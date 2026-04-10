@@ -170,6 +170,16 @@
       <h1>API Reference</h1>
       <p class="subtitle">Use the REST and WebSocket API to integrate LiteRTLM into your application.</p>
 
+      <!-- In-page section nav -->
+      <div class="docs-section-nav">
+        <a class="docs-section-link" href="#docs-auth">Auth</a>
+        <a class="docs-section-link" href="#docs-conversations">Conversations</a>
+        <a class="docs-section-link" href="#docs-tools">Tools</a>
+        <a class="docs-section-link" href="#docs-websocket">WebSocket</a>
+        <a class="docs-section-link" href="#docs-apikeys">API Keys</a>
+        <a class="docs-section-link" href="#docs-errors">Errors</a>
+      </div>
+
       <!-- Base URL -->
       <div class="card">
         <div class="card-title">Base URL</div>
@@ -200,7 +210,7 @@
       </div>
 
       <!-- Auth endpoints -->
-      <div class="card">
+      <div class="card" id="docs-auth">
         <div class="card-title">Auth</div>
 
         <div class="docs-endpoint">
@@ -254,7 +264,7 @@
       </div>
 
       <!-- Conversation endpoints -->
-      <div class="card">
+      <div class="card" id="docs-conversations">
         <div class="card-title">Conversations</div>
         <p class="docs-p">All conversation endpoints accept <strong>JWT or API key</strong> via <code>Authorization: Bearer</code>.</p>
 
@@ -275,16 +285,23 @@
           <span class="docs-method post">POST</span>
           <span class="docs-path">/api/conversations</span>
         </div>
-        <p class="docs-p">Create a new conversation. Choose a builtin preset or supply a custom system instruction.</p>
+        <p class="docs-p">Create a new conversation. Choose a builtin preset or supply a custom system instruction. Optionally bind tools by name.</p>
         <div class="docs-label">Request body — builtin preset</div>
         <pre class="docs-pre">{
   "name": "my-chat",
   "config": "assistant"    <span class="docs-comment">// "assistant" | "coder" | "concise" | "creative"</span>
 }</pre>
+        <div class="docs-label">Request body — with tools</div>
+        <pre class="docs-pre">{
+  "name": "my-chat",
+  "config": "assistant",
+  "tools": ["datetime", "calculator"]    <span class="docs-comment">// optional — bind tools by name</span>
+}</pre>
         <div class="docs-label">Request body — custom instruction</div>
         <pre class="docs-pre">{
   "name": "my-chat",
-  "systemInstruction": "You are a pirate. Respond only in pirate speak."
+  "systemInstruction": "You are a pirate. Respond only in pirate speak.",
+  "tools": ["datetime"]    <span class="docs-comment">// tools work with custom instructions too</span>
 }</pre>
         <div class="docs-label">Response 201</div>
         <pre class="docs-pre">{
@@ -337,8 +354,127 @@
         <pre class="docs-pre">{ "ok": true }</pre>
       </div>
 
+      <!-- Tools -->
+      <div class="card" id="docs-tools">
+        <div class="card-title">Tools</div>
+        <p class="docs-p">
+          Tools let the model call server-side functions during inference.
+          When a tool is bound to a conversation, the model can invoke it automatically
+          — the entire call/response loop happens inside the SDK before any token reaches
+          the client. From the client's perspective, the reply arrives as normal streaming tokens.
+        </p>
+
+        <!-- List tools -->
+        <div class="docs-endpoint">
+          <span class="docs-method get">GET</span>
+          <span class="docs-path">/api/tools</span>
+        </div>
+        <p class="docs-p">List all tools currently registered on the server. No authentication required.</p>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "tools": [
+    {
+      "name": "datetime",
+      "description": "Get the current date and time...",
+      "parameters": [
+        { "name": "format",   "type": "STRING", "description": "Date format pattern", "required": false },
+        { "name": "timezone", "type": "STRING", "description": "IANA timezone ID",    "required": false }
+      ]
+    },
+    {
+      "name": "calculator",
+      "description": "Evaluate a mathematical expression...",
+      "parameters": [
+        { "name": "expression", "type": "STRING", "description": "A math expression", "required": true }
+      ]
+    }
+  ]
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <!-- Bind tools -->
+        <div class="docs-endpoint" style="margin-top:20px;">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/conversations</span>
+          <span style="font-size:12px;color:var(--text-dim);margin-left:8px;">— bind tools at creation</span>
+        </div>
+        <p class="docs-p">
+          Pass <code>"tools"</code> when creating a conversation to bind tools by name.
+          Tools are resolved from the server registry — unknown names are silently skipped.
+          Omit <code>"tools"</code> or pass <code>[]</code> for a tool-free conversation.
+        </p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{
+  "name":  "research-chat",
+  "config": "assistant",
+  "tools": ["datetime", "calculator"]
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <!-- Builtin tools -->
+        <div class="docs-label" style="margin-top:20px;">Built-in tools</div>
+        <table class="key-table" style="margin-top:6px;">
+          <thead>
+            <tr><th>Name</th><th>Description</th><th>Parameters</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="monospace">datetime</td>
+              <td>Returns the current date and time</td>
+              <td>
+                <code>format</code> (optional) — Java date pattern, e.g. <code>yyyy-MM-dd HH:mm:ss</code><br>
+                <code>timezone</code> (optional) — IANA ID, e.g. <code>Asia/Tokyo</code>
+              </td>
+            </tr>
+            <tr>
+              <td class="monospace">calculator</td>
+              <td>Evaluates a math expression and returns the result</td>
+              <td>
+                <code>expression</code> (required) — e.g. <code>(3 + 5) * 2</code>, <code>Math.sqrt(16)</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="docs-divider"></div>
+
+        <!-- How it works -->
+        <div class="docs-label" style="margin-top:20px;">How it works</div>
+        <pre class="docs-pre"><span class="docs-comment">// 1. Create a conversation with tools bound</span>
+POST /api/conversations
+{ "name": "helper", "config": "assistant", "tools": ["datetime", "calculator"] }
+
+<span class="docs-comment">// 2. Send a message — tool calls happen inside the model, transparently</span>
+WS /ws/conversations/helper?token=lrtlm_...
+→ { "message": "What is 2 to the power of 10, and what time is it in Tokyo?" }
+
+<span class="docs-comment">// Model calls: calculator("Math.pow(2,10)") → "1024"</span>
+<span class="docs-comment">//              datetime(timezone="Asia/Tokyo") → "2026-04-11 18:30:00"</span>
+<span class="docs-comment">// Then generates the final reply using both results.</span>
+
+← { "type": "token", "token": "2" }
+← { "type": "token", "token": " to the power of 10 is 1024..." }
+← { "type": "done" }
+
+<span class="docs-comment">// 3. The client sees only the final answer — tool calls are invisible</span></pre>
+
+        <div class="docs-divider"></div>
+
+        <!-- Error handling -->
+        <div class="docs-label" style="margin-top:20px;">Tool error handling</div>
+        <p class="docs-p">
+          If a tool fails (bad parameters, runtime error), it returns a descriptive error string
+          to the model — e.g. <code>"Error: could not evaluate expression '1/0': Division by zero"</code>.
+          The model reads this as the tool result and responds accordingly.
+          Tool errors never interrupt streaming or cause a <code>503</code>.
+        </p>
+      </div>
+
       <!-- WebSocket -->
-      <div class="card">
+      <div class="card" id="docs-websocket">
         <div class="card-title">WebSocket — Streaming</div>
         <div class="docs-endpoint">
           <span class="docs-method ws">WS</span>
@@ -382,7 +518,7 @@ ws.onmessage = (evt) => {
       </div>
 
       <!-- API Keys -->
-      <div class="card">
+      <div class="card" id="docs-apikeys">
         <div class="card-title">API Key Management</div>
         <p class="docs-p">These endpoints require <strong>JWT only</strong> (<code>Authorization: Bearer &lt;accessToken&gt;</code>).</p>
 
@@ -446,7 +582,7 @@ ws.onmessage = (evt) => {
       </div>
 
       <!-- Error responses -->
-      <div class="card">
+      <div class="card" id="docs-errors">
         <div class="card-title">Error Responses</div>
         <p class="docs-p">All errors follow the same structure:</p>
         <pre class="docs-pre">{ "ok": false, "error": "Human-readable message" }</pre>
@@ -488,6 +624,13 @@ ws.onmessage = (evt) => {
     <div class="field" id="nc-system-field" style="display:none;">
       <label>System instruction</label>
       <textarea id="nc-system" placeholder="You are a helpful assistant."></textarea>
+    </div>
+    <div class="field">
+      <label>Tools <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(optional)</span></label>
+      <div class="nc-tools-row" id="nc-tools-row">
+        <label class="nc-tool-check"><input type="checkbox" value="datetime"> datetime</label>
+        <label class="nc-tool-check"><input type="checkbox" value="calculator"> calculator</label>
+      </div>
     </div>
     <div id="nc-err" class="alert alert-error"></div>
     <div class="modal-actions">

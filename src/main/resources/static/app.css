@@ -590,6 +590,21 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 .text-dim  { color: var(--text-dim); }
 .monospace { font-family: var(--mono); font-size: 12px; color: var(--text-code); }
 
+/* ── Tool checkboxes in new-conversation modal ────────────────────────── */
+.nc-tools-row {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px;
+}
+.nc-tool-check {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-dim);
+  background: var(--surface2); border: 1px solid var(--border);
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  transition: border-color .15s, color .15s; user-select: none;
+  font-family: var(--mono);
+}
+.nc-tool-check:hover { border-color: var(--accent); color: var(--text); }
+.nc-tool-check input { accent-color: var(--accent); cursor: pointer; }
+
 /* ── API Docs ─────────────────────────────────────────────────────────── */
 .docs-page .card { margin-bottom: 20px; }
 .docs-p { font-size: 13px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.6; }
@@ -602,6 +617,17 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
   background: var(--surface2); border: 1px solid var(--border);
   padding: 4px 10px; border-radius: 5px; display: inline-block; margin-top: 6px;
 }
+.docs-section-nav {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 20px;
+}
+.docs-section-link {
+  font-size: 12px; font-weight: 500; color: var(--text-dim);
+  background: var(--surface2); border: 1px solid var(--border);
+  padding: 4px 12px; border-radius: 20px; text-decoration: none;
+  transition: all .15s; cursor: pointer;
+}
+.docs-section-link:hover { border-color: var(--accent); color: var(--accent-h); }
 .docs-endpoint {
   display: flex; align-items: center; gap: 10px;
   margin: 18px 0 6px;

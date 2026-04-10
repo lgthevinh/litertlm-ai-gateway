@@ -122,6 +122,7 @@ function showPage(name) {
 
   if (name === 'conversations') loadConversations();
   if (name === 'apikeys')       loadApiKeys();
+  if (name === 'docs')          initDocsSectionNav();
   // 'docs' is static — no data loading needed
 }
 
@@ -377,12 +378,38 @@ function sendMessage() {
   state.ws.send(JSON.stringify({ message: text }));
 }
 
+// ── Docs section nav ─────────────────────────────────────────────────
+/**
+ * Wires the in-page anchor links in the docs section so they scroll the
+ * <main> element (not window) to the target card.
+ * Called once each time the docs page is shown.
+ */
+function initDocsSectionNav() {
+  document.querySelectorAll('.docs-section-link').forEach(link => {
+    // Remove any existing listener by cloning the node
+    const fresh = link.cloneNode(true);
+    link.parentNode.replaceChild(fresh, link);
+    fresh.addEventListener('click', e => {
+      e.preventDefault();
+      const targetId = fresh.getAttribute('href').replace('#', '');
+      const target = document.getElementById(targetId);
+      const main = document.querySelector('main');
+      if (target && main) {
+        const offset = target.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - 16;
+        main.scrollTo({ top: offset, behavior: 'smooth' });
+      }
+    });
+  });
+}
+
 // ── New conversation modal ────────────────────────────────────────────
 function openNewConvModal() {
   document.getElementById('nc-name').value   = '';
   document.getElementById('nc-config').value = 'assistant';
   document.getElementById('nc-system').value = '';
   document.getElementById('nc-system-field').style.display = 'none';
+  // Uncheck all tool checkboxes
+  document.querySelectorAll('#nc-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
   setAlert(document.getElementById('nc-err'), null);
   document.getElementById('new-conv-modal').classList.add('open');
   setTimeout(() => document.getElementById('nc-name').focus(), 50);
@@ -400,9 +427,13 @@ async function createConversation() {
 
   if (!name) { setAlert(errEl, 'Name is required.'); return; }
 
+  // Collect checked tools
+  const tools = Array.from(document.querySelectorAll('#nc-tools-row input[type="checkbox"]:checked'))
+    .map(cb => cb.value);
+
   const body = config === 'custom'
-    ? { name, systemInstruction: system || undefined }
-    : { name, config };
+    ? { name, systemInstruction: system || undefined, tools: tools.length ? tools : undefined }
+    : { name, config, tools: tools.length ? tools : undefined };
 
   try {
     const res = await authApi('/conversations', 'POST', body);
