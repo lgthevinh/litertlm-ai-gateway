@@ -71,10 +71,16 @@ fun Route.conversation() {
                 req.config?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: "assistant"
             }
 
+            val tools = req.tools
+                ?.map { it.trim() }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
+
             val created = handler.createConversation(
                 name              = name,
                 systemInstruction = systemInstruction,
-                configLabel       = configLabel
+                configLabel       = configLabel,
+                tools             = tools
             )
             if (!created) {
                 call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Conversation '$name' already exists")), HttpStatusCode.Conflict)

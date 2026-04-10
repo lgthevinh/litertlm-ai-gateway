@@ -38,6 +38,8 @@ class ConversationHandler(
      * @param topK             Sampler top-K.
      * @param topP             Sampler top-P.
      * @param temperature      Sampler temperature.
+     * @param tools            Tool names to bind to this conversation (e.g. ["datetime", "calculator"]).
+     *                         Empty list means no tools.
      * @return `false` if [name] already exists or the DB insert fails.
      */
     fun createConversation(
@@ -47,6 +49,7 @@ class ConversationHandler(
         topK: Int = 40,
         topP: Double = 0.95,
         temperature: Double = 0.8,
+        tools: List<String> = emptyList(),
     ): Boolean {
         val record = LMStoredConversation(
             name              = name,
@@ -55,10 +58,14 @@ class ConversationHandler(
             topK              = topK,
             topP              = topP,
             temperature       = temperature,
+            tools             = tools.takeIf { it.isNotEmpty() }?.joinToString(","),
             createdAt         = System.currentTimeMillis()
         )
         return messageHandler.saveConversation(record).also { created ->
-            if (created) ILog.i(TAG, "createConversation: '$name' created (config=$configLabel)")
+            if (created) {
+                val toolsInfo = if (tools.isNotEmpty()) ", tools=${tools}" else ""
+                ILog.i(TAG, "createConversation: '$name' created (config=$configLabel$toolsInfo)")
+            }
         }
     }
 

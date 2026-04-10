@@ -4,6 +4,9 @@ import com.google.ai.edge.litertlm.EngineConfig
 import org.thingai.app.aigateway.lm.handler.ConversationHandler
 import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
+import org.thingai.app.aigateway.lm.tool.ToolRegistry
+import org.thingai.app.aigateway.lm.tool.builtin.CalculatorTool
+import org.thingai.app.aigateway.lm.tool.builtin.DateTimeTool
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
 
@@ -64,6 +67,9 @@ object LMService {
 
         newEngineHandler.start { success ->
             if (success) {
+                // Register builtin tools
+                registerBuiltinTools()
+
                 conversationHandler = ConversationHandler(
                     messageHandler = newMessageHandler,
                     engineHandler  = newEngineHandler
@@ -82,8 +88,21 @@ object LMService {
      */
     fun stop() {
         engineHandler?.stop()
-        engineHandler     = null
+        engineHandler       = null
         conversationHandler = null
+        ToolRegistry.clear()
         ILog.i(TAG, "stop: engines stopped")
+    }
+
+    // ── Private helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * Registers built-in gateway tools in [ToolRegistry].
+     * Called once after engine initialization succeeds.
+     */
+    private fun registerBuiltinTools() {
+        ToolRegistry.register(DateTimeTool())
+        ToolRegistry.register(CalculatorTool())
+        ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.list().size} tools registered")
     }
 }

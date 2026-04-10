@@ -9,11 +9,13 @@ package org.thingai.app.aigateway.api.route.dto
  * @param systemInstruction Custom system prompt. Defaults to the ASSISTANT preset if omitted.
  * @param config           Builtin config preset: "assistant" | "coder" | "concise" | "creative".
  *                         Ignored when [systemInstruction] is provided.
+ * @param tools            Optional list of tool names to bind, e.g. ["datetime", "calculator"].
  */
 data class CreateConversationRequest(
     val name: String?,
     val systemInstruction: String?,
-    val config: String?
+    val config: String?,
+    val tools: List<String>?
 )
 
 data class CreateConversationResponse(
@@ -57,4 +59,24 @@ data class SendMessageRequest(
 data class SendMessageResponse(
     val ok: Boolean,
     val reply: String
+)
+
+// ── GET /api/tools  ──────────────────────────────────────────────────────────
+
+data class ToolParamDto(
+    val name: String,
+    val type: String,
+    val description: String,
+    val required: Boolean
+)
+
+data class ToolDto(
+    val name: String,
+    val description: String,
+    val parameters: List<ToolParamDto>
+)
+
+data class ListToolsResponse(
+    val ok: Boolean,
+    val tools: List<ToolDto>
 )

@@ -48,6 +48,13 @@ data class LMStoredConversation(
     @DaoColumn
     var temperature: Double,
 
+    /**
+     * Comma-separated tool names bound to this conversation, e.g. "datetime,calculator".
+     * Null or blank means no tools — [automaticToolCalling] will be false.
+     */
+    @DaoColumn
+    var tools: String?,
+
     /** Unix epoch ms when the conversation was first created. */
     @DaoColumn
     var createdAt: Long
@@ -61,6 +68,7 @@ data class LMStoredConversation(
         topK              = 40,
         topP              = 0.95,
         temperature       = 0.8,
+        tools             = null,
         createdAt         = 0L
     )
 }
