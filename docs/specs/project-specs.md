@@ -10,7 +10,7 @@ LiteRTLM AI Gateway is a Kotlin/JVM HTTP gateway that wraps Google AI Edge LiteR
 |-------|-----------|
 | Language | Kotlin 2.3.10, JDK 21 |
 | Build | Gradle Kotlin DSL 9.0.0 |
-| HTTP server | Ktor 3.4.2 (Netty engine) |
+| HTTP server | Ktor 3.4.2 (Netty lm) |
 | LLM inference | Google AI Edge LiteRTLM JVM SDK 0.10.0 |
 | Database | SQLite via `DaoSqlite` (desktopplatform.jar) |
 | Logging | `ILog` / `ILogImpl` (applicationbase.jar) |
@@ -49,7 +49,7 @@ litertlm-ai-gateway/
 └── src/main/kotlin/
     │
     ├── Main.kt                     # Entry point — starts Ktor on :8080
-    ├── LMApplication.kt            # Service bootstrap: DB, auth, engine init
+    ├── LMApplication.kt            # Service bootstrap: DB, auth, lm init
     │
     ├── api/
     │   ├── plugin/
@@ -74,7 +74,7 @@ litertlm-ai-gateway/
     │   ├── LMAuth.kt               # LMAuthUser, LMAuthToken @DaoTable entities, LMAuthJwt
     │   └── LMAuthService.kt        # Register, login, refresh, logout, validateAccessToken
     │
-    ├── engine/
+    ├── lm/
     │   ├── LMEngineManager.kt      # Singleton — holds Engine + ConversationHandler
     │   ├── builtin/
     │   │   └── BuiltinConversationConfig.kt  # ASSISTANT, CODER, CONCISE, CREATIVE presets

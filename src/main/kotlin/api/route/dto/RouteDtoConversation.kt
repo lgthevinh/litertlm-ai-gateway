@@ -29,6 +29,20 @@ data class ListConversationsResponse(
     val conversations: List<String>
 )
 
+// ── GET /conversations/{name}/messages  ──────────────────────────────────────
+
+data class StoredMessageDto(
+    val role: String,
+    val text: String,
+    val seq: Int,
+    val createdAt: Long
+)
+
+data class GetMessagesResponse(
+    val ok: Boolean,
+    val messages: List<StoredMessageDto>
+)
+
 // ── POST /conversations/{name}/messages  ─────────────────────────────────────
 
 /**

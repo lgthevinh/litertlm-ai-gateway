@@ -16,7 +16,6 @@ const state = {
 // Bootstrap
 // ═══════════════════════════════════════════════════════════════════════
 window.addEventListener('DOMContentLoaded', () => {
-  // Restore session from sessionStorage (survives page refresh, cleared on tab close)
   const saved = sessionStorage.getItem('lm_session');
   if (saved) {
     try {
@@ -30,7 +29,6 @@ window.addEventListener('DOMContentLoaded', () => {
     showLoginScreen();
   }
 
-  // Enter on login fields
   document.getElementById('login-user').addEventListener('keydown', e => {
     if (e.key === 'Enter') doLogin();
   });
@@ -38,7 +36,6 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') doLogin();
   });
 
-  // Chat textarea: Enter sends, Shift+Enter inserts newline; auto-resize height
   const chatInput = document.getElementById('chat-input');
   chatInput.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -51,7 +48,6 @@ window.addEventListener('DOMContentLoaded', () => {
     chatInput.style.height = Math.min(chatInput.scrollHeight, 200) + 'px';
   });
 
-  // New conversation: toggle custom system instruction field
   document.getElementById('nc-config').addEventListener('change', e => {
     document.getElementById('nc-system-field').style.display =
       e.target.value === 'custom' ? 'block' : 'none';
@@ -61,12 +57,6 @@ window.addEventListener('DOMContentLoaded', () => {
 // ═══════════════════════════════════════════════════════════════════════
 // Auth
 // ═══════════════════════════════════════════════════════════════════════
-function onUsernameInput(val) {
-  const isLocal = val.trim() === 'local';
-  document.getElementById('pass-field').style.display = isLocal ? 'none' : '';
-  document.getElementById('local-hint').style.display = isLocal ? 'block' : 'none';
-}
-
 async function doLogin() {
   const username = document.getElementById('login-user').value.trim();
   const password = document.getElementById('login-pass').value;
@@ -74,13 +64,11 @@ async function doLogin() {
   setAlert(errEl, null);
 
   if (!username) { setAlert(errEl, 'Username is required.'); return; }
-  // "local" user on localhost — password not required
-  if (username !== 'local' && !password) { setAlert(errEl, 'Password is required.'); return; }
+  if (!password) { setAlert(errEl, 'Password is required.'); return; }
 
   setBtnLoading('login-btn', true);
   try {
-    const body = username === 'local' ? { username } : { username, password };
-    const res  = await api('/auth/login', 'POST', body);
+    const res = await api('/auth/login', 'POST', { username, password });
     if (!res.ok) { setAlert(errEl, res.error || 'Login failed.'); return; }
     state.accessToken  = res.accessToken;
     state.refreshToken = res.refreshToken;
@@ -106,7 +94,7 @@ function clearSession() {
   state.accessToken = state.refreshToken = state.username = null;
   state.activeConv  = null;
   state.messages    = {};
-  if (state.ws) { state.ws.close(); state.ws = null; }
+  wsDisconnect();
   sessionStorage.removeItem('lm_session');
   showLoginScreen();
 }
@@ -130,11 +118,11 @@ function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('nav a[data-page]').forEach(a => a.classList.remove('active'));
   document.getElementById('page-' + name)?.classList.add('active');
-  document.querySelector(`nav a[data-page="${name}"]`)?.classList.add('active');
+  document.querySelector('nav a[data-page="' + name + '"]')?.classList.add('active');
 
   if (name === 'conversations') loadConversations();
   if (name === 'apikeys')       loadApiKeys();
-  if (name === 'users')         loadUsers();
+  // 'docs' is static — no data loading needed
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -154,46 +142,71 @@ function renderConvList(names) {
     el.innerHTML = '<div class="text-dim" style="font-size:12px;padding:8px 4px;">No conversations yet</div>';
     return;
   }
-  el.innerHTML = names.map(n => `
-    <div class="conv-item ${n === state.activeConv ? 'active' : ''}" onclick="selectConv('${esc(n)}')">
-      <span>${esc(n)}</span>
-      <span class="del-conv" onclick="deleteConv(event,'${esc(n)}')" title="Delete">×</span>
-    </div>`).join('');
+  el.innerHTML = names.map(n =>
+    '<div class="conv-item ' + (n === state.activeConv ? 'active' : '') + '" onclick="selectConv(\'' + esc(n) + '\')">' +
+    '<span>' + esc(n) + '</span>' +
+    '<span class="del-conv" onclick="deleteConv(event,\'' + esc(n) + '\')" title="Delete">\u00d7</span>' +
+    '</div>'
+  ).join('');
 }
 
 function selectConv(name) {
+  if (state.activeConv === name) return;  // already selected — no-op
+
+  // Reset streaming state from previous conversation before switching
+  state.streaming  = false;
   state.activeConv = name;
-  document.getElementById('conv-title').textContent = name;
-  document.getElementById('send-btn').disabled  = false;
-  document.getElementById('chat-input').disabled = false;
-  document.getElementById('chat-input').focus();
+
+  document.getElementById('conv-title').textContent  = name;
+  document.getElementById('send-btn').disabled       = true;   // re-enabled when WS connects
+  document.getElementById('chat-input').disabled     = true;
+  setWsStatus('disconnected');
 
   document.querySelectorAll('.conv-item').forEach(el => {
     el.classList.toggle('active', el.querySelector('span').textContent === name);
   });
 
-  renderMessages(name);
-  connectWs(name);
+  // Load history from server if not already in memory, then render and connect WS
+  if (state.messages[name]) {
+    renderMessages(name);
+    connectWs(name);
+  } else {
+    loadMessages(name);
+  }
+}
+
+async function loadMessages(name) {
+  try {
+    const res = await authApi('/conversations/' + encodeURIComponent(name) + '/messages', 'GET');
+    if (res.ok) {
+      state.messages[name] = (res.messages || []).map(m => ({ role: m.role, text: m.text }));
+    } else {
+      state.messages[name] = [];
+    }
+  } catch (_) {
+    state.messages[name] = [];
+  }
+  // Only render and connect if the user hasn't switched away in the meantime
+  if (state.activeConv === name) {
+    renderMessages(name);
+    connectWs(name);
+  }
 }
 
 function renderMessages(name) {
   const box  = document.getElementById('chat-box');
   const msgs = state.messages[name] || [];
   if (!msgs.length) {
-    box.innerHTML = `<div class="chat-empty"><strong>LiteRTLM</strong>Send a message to start the conversation</div>`;
+    box.innerHTML = '<div class="chat-empty"><strong>LiteRTLM</strong>Send a message to start the conversation</div>';
     return;
   }
   box.innerHTML = msgs.map(m => {
     if (m.role === 'user') {
-      return `<div class="msg user">
-        <div class="msg-label">${esc(state.username)}</div>
-        <div class="msg-bubble">${esc(m.text)}</div>
-      </div>`;
+      return '<div class="msg user"><div class="msg-label">' + esc(state.username) + '</div>' +
+             '<div class="msg-bubble">' + esc(m.text) + '</div></div>';
     }
-    return `<div class="msg model">
-      <div class="msg-label">Model</div>
-      <div class="msg-bubble markdown">${renderMarkdown(m.text)}</div>
-    </div>`;
+    return '<div class="msg model"><div class="msg-label">Model</div>' +
+           '<div class="msg-bubble markdown">' + renderMarkdown(m.text) + '</div></div>';
   }).join('');
   box.scrollTop = box.scrollHeight;
 }
@@ -206,25 +219,17 @@ function appendMessage(name, role, text) {
 
 // ── Markdown ──────────────────────────────────────────────────────────
 function renderMarkdown(raw) {
-  if (typeof marked === 'undefined') return `<p>${esc(raw)}</p>`;
+  if (typeof marked === 'undefined') return '<p>' + esc(raw) + '</p>';
 
-  const html = marked.parse(raw, {
-    gfm:       true,
-    breaks:    true,
-    mangle:    false,
-    headerIds: false,
-  });
+  const html = marked.parse(raw, { gfm: true, breaks: true, mangle: false, headerIds: false });
 
-  // Wrap <pre> blocks: extract language label from first <code class="language-xxx">
   return html.replace(/<pre><code(?: class="language-([^"]*)")?>([\s\S]*?)<\/code><\/pre>/g,
-    (_, lang, code) => {
+    function(_, lang, code) {
       const id      = 'cb-' + Math.random().toString(36).slice(2, 8);
-      const langTag = lang ? `<span class="code-lang">${esc(lang)}</span>` : '';
-      return `<div class="code-block-wrap">
-        ${langTag}
-        <pre id="${id}"><code>${code}</code></pre>
-        <button class="code-copy-btn" onclick="copyCode('${id}')">Copy</button>
-      </div>`;
+      const langTag = lang ? '<span class="code-lang">' + esc(lang) + '</span>' : '';
+      return '<div class="code-block-wrap">' + langTag +
+             '<pre id="' + id + '"><code>' + code + '</code></pre>' +
+             '<button class="code-copy-btn" onclick="copyCode(\'' + id + '\')">Copy</button></div>';
     }
   );
 }
@@ -239,19 +244,61 @@ function copyCode(preId) {
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────
+
+/**
+ * Cleanly closes the current WebSocket without triggering the onclose handler side-effects.
+ * Always resets streaming state.
+ */
+function wsDisconnect() {
+  if (state.ws) {
+    state.ws.onclose = null;
+    state.ws.close();
+    state.ws = null;
+  }
+  state.streaming = false;
+  setWsStatus('disconnected');
+}
+
+/**
+ * Opens a new WebSocket for [name], replacing any existing connection.
+ * Input is disabled until onopen fires for THIS socket and THIS conversation.
+ * Frames from stale sockets (after conversation switch) are silently ignored.
+ */
 function connectWs(name) {
-  if (state.ws) { state.ws.close(); state.ws = null; }
+  wsDisconnect();
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const url   = `${proto}://${location.host}/ws/conversations/${encodeURIComponent(name)}?token=${state.accessToken}`;
+  const url   = proto + '://' + location.host + '/ws/conversations/' + encodeURIComponent(name) + '?token=' + state.accessToken;
   const ws    = new WebSocket(url);
   state.ws    = ws;
 
-  setWsStatus('disconnected');
-  ws.onopen    = () => setWsStatus('connected');
-  ws.onclose   = () => { setWsStatus('disconnected'); state.ws = null; state.streaming = false; };
-  ws.onerror   = () => setWsStatus('disconnected');
-  ws.onmessage = (evt) => {
+  ws.onopen = function() {
+    // Only activate input if this socket is still the active one for this conversation
+    if (state.ws === ws && state.activeConv === name) {
+      setWsStatus('connected');
+      document.getElementById('send-btn').disabled   = false;
+      document.getElementById('chat-input').disabled = false;
+      document.getElementById('chat-input').focus();
+    }
+  };
+
+  ws.onclose = function() {
+    if (state.ws === ws) {
+      state.ws        = null;
+      state.streaming = false;
+      setWsStatus('disconnected');
+      document.getElementById('send-btn').disabled   = true;
+      document.getElementById('chat-input').disabled = true;
+    }
+  };
+
+  ws.onerror = function() {
+    if (state.ws === ws) setWsStatus('disconnected');
+  };
+
+  ws.onmessage = function(evt) {
+    // Guard: discard frames from a stale socket or after conversation switch
+    if (state.ws !== ws || state.activeConv !== name) return;
     try { handleWsFrame(name, JSON.parse(evt.data)); } catch (_) {}
   };
 }
@@ -262,7 +309,6 @@ function handleWsFrame(convName, frame) {
   if (frame.type === 'token') {
     let streamingBubble = box.querySelector('.msg-bubble.streaming');
     if (!streamingBubble) {
-      // Remove empty-state placeholder
       const empty = box.querySelector('.chat-empty');
       if (empty) empty.remove();
       const wrapper = document.createElement('div');
@@ -298,7 +344,7 @@ function handleWsFrame(convName, frame) {
     document.getElementById('chat-input').disabled = false;
     const errDiv = document.createElement('div');
     errDiv.style.cssText = 'color:var(--danger);font-size:13px;text-align:center;padding:12px 0;';
-    errDiv.textContent = '⚠ ' + frame.error;
+    errDiv.textContent = '\u26a0 ' + frame.error;
     box.appendChild(errDiv);
     box.scrollTop = box.scrollHeight;
   }
@@ -317,11 +363,9 @@ function sendMessage() {
   const text  = input.value.trim();
   if (!text) return;
 
-  // Clear and reset textarea height
   input.value = '';
   input.style.height = 'auto';
 
-  // Remove empty-state if still shown
   const box   = document.getElementById('chat-box');
   const empty = box.querySelector('.chat-empty');
   if (empty) empty.remove();
@@ -371,16 +415,16 @@ async function createConversation() {
 
 async function deleteConv(evt, name) {
   evt.stopPropagation();
-  if (!confirm(`Delete conversation "${name}"?`)) return;
+  if (!confirm('Delete conversation "' + name + '"?')) return;
   try {
-    await authApi(`/conversations/${encodeURIComponent(name)}`, 'DELETE');
+    await authApi('/conversations/' + encodeURIComponent(name), 'DELETE');
     if (state.activeConv === name) {
+      wsDisconnect();
       state.activeConv = null;
-      if (state.ws) { state.ws.close(); state.ws = null; }
       document.getElementById('conv-title').textContent = 'Select a conversation';
-      document.getElementById('send-btn').disabled   = true;
-      document.getElementById('chat-input').disabled = true;
-      document.getElementById('chat-box').innerHTML  =
+      document.getElementById('send-btn').disabled      = true;
+      document.getElementById('chat-input').disabled    = true;
+      document.getElementById('chat-box').innerHTML     =
         '<div class="chat-empty"><strong>LiteRTLM</strong>Select or create a conversation to start chatting</div>';
     }
     delete state.messages[name];
@@ -395,22 +439,23 @@ async function loadApiKeys() {
   const tbody = document.getElementById('key-tbody');
   try {
     const res  = await authApi('/api-key/list', 'GET');
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="6" class="text-dim">Failed to load.</td></tr>`; return; }
+    if (!res.ok) { tbody.innerHTML = '<tr><td colspan="6" class="text-dim">Failed to load.</td></tr>'; return; }
     const keys = res.keys || [];
     if (!keys.length) {
-      tbody.innerHTML = `<tr><td colspan="6" class="text-dim" style="padding:16px 12px;">No keys yet</td></tr>`;
+      tbody.innerHTML = '<tr><td colspan="6" class="text-dim" style="padding:16px 12px;">No keys yet</td></tr>';
       return;
     }
-    tbody.innerHTML = keys.map(k => `
-      <tr>
-        <td>${esc(k.name)}</td>
-        <td class="monospace">${esc(k.prefix)}</td>
-        <td><span class="badge ${k.active ? 'badge-active' : 'badge-revoked'}">${k.active ? 'Active' : 'Revoked'}</span></td>
-        <td class="text-dim">${fmtDate(k.createdAt)}</td>
-        <td class="text-dim">${k.lastUsedAt ? fmtDate(k.lastUsedAt) : '—'}</td>
-        <td>${k.active ? `<button class="btn btn-ghost btn-sm" onclick="openRevokeModal('${esc(k.prefix)}')">Revoke</button>` : ''}</td>
-      </tr>`).join('');
-  } catch (e) { tbody.innerHTML = `<tr><td colspan="6" class="text-dim">${e.message}</td></tr>`; }
+    tbody.innerHTML = keys.map(k =>
+      '<tr>' +
+      '<td>' + esc(k.name) + '</td>' +
+      '<td class="monospace">' + esc(k.prefix) + '</td>' +
+      '<td><span class="badge ' + (k.active ? 'badge-active' : 'badge-revoked') + '">' + (k.active ? 'Active' : 'Revoked') + '</span></td>' +
+      '<td class="text-dim">' + fmtDate(k.createdAt) + '</td>' +
+      '<td class="text-dim">' + (k.lastUsedAt ? fmtDate(k.lastUsedAt) : '\u2014') + '</td>' +
+      '<td>' + (k.active ? '<button class="btn btn-ghost btn-sm" onclick="openRevokeModal(\'' + esc(k.prefix) + '\')">Revoke</button>' : '') + '</td>' +
+      '</tr>'
+    ).join('');
+  } catch (e) { tbody.innerHTML = '<tr><td colspan="6" class="text-dim">' + e.message + '</td></tr>'; }
 }
 
 async function generateKey() {
@@ -439,7 +484,6 @@ function copyKey() {
   });
 }
 
-// ── Revoke modal ──────────────────────────────────────────────────────
 function openRevokeModal(prefix) {
   state.revokeTarget = prefix;
   document.getElementById('revoke-key-prefix').textContent = prefix;
@@ -468,108 +512,22 @@ async function confirmRevoke() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Users
-// ═══════════════════════════════════════════════════════════════════════
-let deleteUserTarget = null;
-
-async function loadUsers() {
-  const tbody = document.getElementById('user-tbody');
-  // Show X-Api-Key field only when signed in as a non-local user
-  const isLocal = state.username === 'local';
-  document.getElementById('xapikey-field').style.display = isLocal ? 'none' : '';
-
-  try {
-    const res  = await authApi('/auth/users', 'GET');
-    if (!res.ok) { tbody.innerHTML = `<tr><td colspan="3" class="text-dim">Failed to load.</td></tr>`; return; }
-    const users = res.users || [];
-    if (!users.length) {
-      tbody.innerHTML = `<tr><td colspan="3" class="text-dim" style="padding:16px 12px;">No users yet</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = users.map(u => {
-      const isSelf = u.username === state.username;
-      return `<tr>
-        <td style="font-weight:500;">${esc(u.username)}${isSelf ? ' <span class="badge badge-active" style="font-size:10px;">you</span>' : ''}</td>
-        <td class="text-dim">${fmtDate(u.createdAt)}</td>
-        <td>${!isSelf ? `<button class="btn btn-ghost btn-sm" onclick="openDeleteUserModal('${esc(u.username)}')">Delete</button>` : ''}</td>
-      </tr>`;
-    }).join('');
-  } catch (e) { tbody.innerHTML = `<tr><td colspan="3" class="text-dim">${esc(e.message)}</td></tr>`; }
-}
-
-async function createUser() {
-  const username = document.getElementById('new-user-name').value.trim();
-  const password = document.getElementById('new-user-pass').value;
-  const xapikey  = document.getElementById('new-user-xapikey').value.trim();
-  const errEl    = document.getElementById('user-create-err');
-  const okEl     = document.getElementById('user-create-ok');
-  setAlert(errEl, null);
-  setAlert(okEl, null);
-
-  if (!username) { setAlert(errEl, 'Username is required.'); return; }
-  if (!password) { setAlert(errEl, 'Password is required.'); return; }
-
-  const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${state.accessToken}` };
-  if (state.username !== 'local' && xapikey) headers['X-Api-Key'] = xapikey;
-
-  try {
-    const res = await fetch('/api/auth/user/create', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ username, password })
-    }).then(r => r.json());
-
-    if (!res.ok) { setAlert(errEl, res.error || 'Failed to create user.'); return; }
-
-    document.getElementById('new-user-name').value = '';
-    document.getElementById('new-user-pass').value = '';
-    document.getElementById('new-user-xapikey').value = '';
-    setAlert(okEl, `User "${username}" created successfully.`);
-    await loadUsers();
-  } catch (e) { setAlert(errEl, e.message); }
-}
-
-function openDeleteUserModal(username) {
-  deleteUserTarget = username;
-  document.getElementById('delete-user-name').textContent = username;
-  setAlert(document.getElementById('delete-user-err'), null);
-  document.getElementById('delete-user-modal').classList.add('open');
-}
-function closeDeleteUserModal() {
-  document.getElementById('delete-user-modal').classList.remove('open');
-  deleteUserTarget = null;
-}
-
-async function confirmDeleteUser() {
-  if (!deleteUserTarget) return;
-  const errEl = document.getElementById('delete-user-err');
-  setAlert(errEl, null);
-  try {
-    const res = await authApi(`/auth/user/${encodeURIComponent(deleteUserTarget)}`, 'DELETE');
-    if (!res.ok) { setAlert(errEl, res.error || 'Delete failed.'); return; }
-    closeDeleteUserModal();
-    await loadUsers();
-  } catch (e) { setAlert(errEl, e.message); }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
 // HTTP helpers
 // ═══════════════════════════════════════════════════════════════════════
-
-/** Unauthenticated fetch — prefixes /api automatically. */
-async function api(path, method = 'GET', body = null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+async function api(path, method, body) {
+  method = method || 'GET';
+  const opts = { method: method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
   return (await fetch('/api' + path, opts)).json();
 }
 
-/** Authenticated fetch with automatic token refresh on 401. */
-async function authApi(path, method = 'GET', body = null) {
+async function authApi(path, method, body) {
+  method = method || 'GET';
   const opts = {
-    method,
+    method: method,
     headers: {
       'Content-Type':  'application/json',
-      'Authorization': `Bearer ${state.accessToken}`,
+      'Authorization': 'Bearer ' + state.accessToken,
     },
   };
   if (body) opts.body = JSON.stringify(body);
@@ -578,7 +536,7 @@ async function authApi(path, method = 'GET', body = null) {
 
   if (res.status === 401 && state.refreshToken) {
     if (await tryRefresh()) {
-      opts.headers['Authorization'] = `Bearer ${state.accessToken}`;
+      opts.headers['Authorization'] = 'Bearer ' + state.accessToken;
       res = await fetch('/api' + path, opts);
     } else {
       clearSession();
@@ -614,7 +572,7 @@ function setAlert(el, msg) {
 function setBtnLoading(id, loading) {
   const btn    = document.getElementById(id);
   btn.disabled = loading;
-  btn.innerHTML = loading ? '<span class="loading"></span> Signing in…' : 'Sign in';
+  btn.innerHTML = loading ? '<span class="loading"></span> Signing in\u2026' : 'Sign in';
 }
 
 function esc(str) {
@@ -624,6 +582,6 @@ function esc(str) {
 }
 
 function fmtDate(ms) {
-  if (!ms) return '—';
+  if (!ms) return '\u2014';
   return new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }

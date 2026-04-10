@@ -42,7 +42,7 @@ JWT_SECRET=change-me-jwt-secret
 
 3. Download the LiteRTLM model and place it under `model/`.
 
-The default engine config in `src/main/kotlin/LMApplication.kt` expects:
+The default lm config in `src/main/kotlin/LMApplication.kt` expects:
 
 ```
 model/gemma4-e4b/gemma-4-E4B-it.litertlm

@@ -7,7 +7,9 @@
       "Bash(jar xf:*)",
       "Bash(javap -p org/thingai/platform/dao/DaoSqlite.class)",
       "Bash(javap -p org/thingai/platform/dao/DaoFile.class)",
-      "Bash(javap -p org/thingai/platform/log/ILogImpl.class)"
+      "Bash(javap -p org/thingai/platform/log/ILogImpl.class)",
+      "Bash(python3:*)",
+      "Bash(grep:*)"
     ]
   }
 }

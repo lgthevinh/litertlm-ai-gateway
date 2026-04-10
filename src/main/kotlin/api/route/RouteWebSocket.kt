@@ -12,8 +12,8 @@ import org.thingai.app.aigateway.api.route.dto.WsDoneFrame
 import org.thingai.app.aigateway.api.route.dto.WsErrorFrame
 import org.thingai.app.aigateway.api.route.dto.WsIncomingMessage
 import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
-import org.thingai.app.aigateway.engine.LMEngineManager
-import org.thingai.app.aigateway.engine.handler.WsChunk
+import org.thingai.app.aigateway.engine.LMService
+import org.thingai.app.aigateway.lm.handler.WsChunk
 import org.thingai.app.aigateway.utils.JsonUtils
 
 fun Route.conversationWebSocket() {
@@ -30,9 +30,8 @@ fun Route.conversationWebSocket() {
     //                     { "type": "done" }                       (end of turn)
     //                     { "type": "error", "error": "..." }      (recoverable error)
     //
-    // The connection stays open for the full conversation lifetime.
+    // The WebSocket connection stays open for the full conversation lifetime.
     // Send another message after receiving "done" to continue the conversation.
-    // Close the socket when finished — the server will not close it mid-conversation.
     webSocket("/ws/conversations/{name}") {
         val name = call.parameters["name"]?.trim().orEmpty()
         if (name.isBlank()) {
@@ -41,8 +40,6 @@ fun Route.conversationWebSocket() {
         }
 
         // ── Auth ─────────────────────────────────────────────────────────────
-        // WebSocket upgrades cannot carry an Authorization header in most clients,
-        // so the token is passed as a query parameter instead.
         val token = call.request.queryParameters["token"]?.trim().orEmpty()
         if (!resolveIdentity(token)) {
             sendError("Invalid or missing token. Connect with ?token=<accessToken|apiKey>")
@@ -51,7 +48,7 @@ fun Route.conversationWebSocket() {
         }
 
         // ── Engine check ─────────────────────────────────────────────────────
-        val handler = LMEngineManager.conversationHandler
+        val handler = LMService.conversationHandler
         if (handler == null) {
             sendError("Engine not ready")
             close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Engine not ready"))
@@ -75,8 +72,8 @@ fun Route.conversationWebSocket() {
                 continue
             }
 
-            // ── Stream tokens ─────────────────────────────────────────────────
-            handler.sendMessageAsync(name, message).collect { chunk ->
+            // Stream tokens — queues if both engines are busy, waits until one is free.
+            handler.sendMessage(name, message).collect { chunk ->
                 when (chunk) {
                     is WsChunk.Token -> sendJson(WsTokenFrame(token = chunk.text))
                     is WsChunk.Done  -> sendJson(WsDoneFrame())
@@ -89,10 +86,6 @@ fun Route.conversationWebSocket() {
 
 // ── Private helpers ───────────────────────────────────────────────────────────
 
-/**
- * Validates a token (JWT or API key) from the `?token=` query parameter.
- * Returns `true` if the credential is accepted.
- */
 private fun resolveIdentity(token: String): Boolean {
     if (token.isBlank()) return false
     return if (token.startsWith("lrtlm_")) {

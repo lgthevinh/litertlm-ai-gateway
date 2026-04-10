@@ -39,7 +39,7 @@ data class LMApiKey(
 }
 
 /**
- * Returned by [LMApiKeyService.generateApiKey].
+ * Returned by [LMServiceApiKey.generateApiKey].
  * [rawKey] is the only time the unmasked key is accessible — store it immediately.
  */
 data class LMApiKeyResult(

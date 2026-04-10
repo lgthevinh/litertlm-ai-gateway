@@ -19,11 +19,10 @@
         <input id="login-user" type="text" placeholder="alice"
                autocomplete="username" oninput="onUsernameInput(this.value)">
       </div>
-      <div class="field" id="pass-field">
+      <div class="field">
         <label>Password</label>
         <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password">
       </div>
-      <div id="local-hint" class="local-hint">🖥 Local access — no password required</div>
       <button class="btn btn-primary" style="width:100%;justify-content:center;" id="login-btn" onclick="doLogin()">
         Sign in
       </button>
@@ -51,12 +50,15 @@
       API Keys
     </a>
 
-    <a onclick="showPage('users')" data-page="users">
+    <a onclick="showPage('docs')" data-page="docs">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
       </svg>
-      Users
+      API Docs
     </a>
 
     <div class="spacer"></div>
@@ -163,66 +165,306 @@
       </div>
     </div>
 
-    <!-- ── Users ──────────────────────────────────────────────────── -->
-    <div id="page-users" class="page">
-      <h1>Users</h1>
-      <p class="subtitle">Manage accounts. Local users can create accounts freely; remote access requires X-Api-Key.</p>
+    <!-- ── API Docs ───────────────────────────────────────────────── -->
+    <div id="page-docs" class="page docs-page">
+      <h1>API Reference</h1>
+      <p class="subtitle">Use the REST and WebSocket API to integrate LiteRTLM into your application.</p>
 
-      <!-- Create user -->
+      <!-- Base URL -->
       <div class="card">
-        <div class="card-title">Create user</div>
-        <div class="row">
-          <div class="field">
-            <label>Username</label>
-            <input id="new-user-name" type="text" placeholder="e.g. alice">
-          </div>
-          <div class="field">
-            <label>Password</label>
-            <input id="new-user-pass" type="password" placeholder="••••••••">
-          </div>
-        </div>
-        <div class="field" id="xapikey-field" style="display:none;">
-          <label>X-Api-Key <span style="color:var(--danger);font-size:11px;">(required for remote access)</span></label>
-          <input id="new-user-xapikey" type="password" placeholder="Server X-Api-Key">
-        </div>
-        <button class="btn btn-primary" onclick="createUser()">Create user</button>
-        <div id="user-create-err" class="alert alert-error"></div>
-        <div id="user-create-ok"  class="alert alert-success"></div>
+        <div class="card-title">Base URL</div>
+        <code class="docs-code-inline">http://&lt;host&gt;:&lt;port&gt;</code>
+        <p class="docs-p">All REST endpoints are prefixed with <code>/api</code>. The WebSocket endpoint is at <code>/ws</code>.</p>
       </div>
 
-      <!-- User list -->
+      <!-- Authentication -->
       <div class="card">
-        <div class="card-title">Registered users</div>
+        <div class="card-title">Authentication</div>
+        <p class="docs-p">Two credential types are accepted depending on the endpoint:</p>
         <table class="key-table">
-          <thead>
-            <tr><th>Username</th><th>Created</th><th></th></tr>
-          </thead>
-          <tbody id="user-tbody">
-            <tr><td colspan="3" class="text-dim" style="padding:16px 12px;">Loading…</td></tr>
+          <thead><tr><th>Type</th><th>Header</th><th>Endpoints</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><span class="badge badge-active">JWT</span></td>
+              <td class="monospace">Authorization: Bearer &lt;accessToken&gt;</td>
+              <td>All <code>/api/conversations/*</code>, <code>/api/api-key/*</code></td>
+            </tr>
+            <tr>
+              <td><span class="badge badge-active">API Key</span></td>
+              <td class="monospace">Authorization: Bearer lrtlm_&lt;key&gt;</td>
+              <td>All <code>/api/conversations/*</code>, WebSocket</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="docs-p" style="margin-top:12px;">API key management endpoints (<code>/api/api-key/*</code>) require JWT only.</p>
+      </div>
+
+      <!-- Auth endpoints -->
+      <div class="card">
+        <div class="card-title">Auth</div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/auth/login</span>
+        </div>
+        <p class="docs-p">Authenticate and receive a JWT pair. No auth header required.</p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{
+  "username": "admin",
+  "password": "your-password"
+}</pre>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "accessToken": "eyJ...",
+  "refreshToken": "eyJ..."
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/auth/refresh</span>
+        </div>
+        <p class="docs-p">Exchange a refresh token for a new JWT pair. Refresh tokens rotate on every use.</p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{
+  "refreshToken": "eyJ..."
+}</pre>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "accessToken": "eyJ...",
+  "refreshToken": "eyJ..."
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/auth/logout</span>
+        </div>
+        <p class="docs-p">Invalidate the current session. The access token expires naturally after 15 minutes.</p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{
+  "refreshToken": "eyJ..."
+}</pre>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{ "ok": true }</pre>
+      </div>
+
+      <!-- Conversation endpoints -->
+      <div class="card">
+        <div class="card-title">Conversations</div>
+        <p class="docs-p">All conversation endpoints accept <strong>JWT or API key</strong> via <code>Authorization: Bearer</code>.</p>
+
+        <div class="docs-endpoint">
+          <span class="docs-method get">GET</span>
+          <span class="docs-path">/api/conversations</span>
+        </div>
+        <p class="docs-p">List all conversations.</p>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "conversations": ["my-chat", "code-review"]
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/conversations</span>
+        </div>
+        <p class="docs-p">Create a new conversation. Choose a builtin preset or supply a custom system instruction.</p>
+        <div class="docs-label">Request body — builtin preset</div>
+        <pre class="docs-pre">{
+  "name": "my-chat",
+  "config": "assistant"    <span class="docs-comment">// "assistant" | "coder" | "concise" | "creative"</span>
+}</pre>
+        <div class="docs-label">Request body — custom instruction</div>
+        <pre class="docs-pre">{
+  "name": "my-chat",
+  "systemInstruction": "You are a pirate. Respond only in pirate speak."
+}</pre>
+        <div class="docs-label">Response 201</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "name": "my-chat",
+  "config": "assistant"
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method get">GET</span>
+          <span class="docs-path">/api/conversations/{name}/messages</span>
+        </div>
+        <p class="docs-p">Retrieve full message history for a conversation, ordered oldest-first.</p>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "messages": [
+    { "role": "user",  "text": "Hello", "seq": 0, "createdAt": 1700000000000 },
+    { "role": "model", "text": "Hi! How can I help?", "seq": 1, "createdAt": 1700000000000 }
+  ]
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/conversations/{name}/messages</span>
+        </div>
+        <p class="docs-p">Send a message and receive the full reply in a single blocking response. For streaming, use the WebSocket endpoint instead.</p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{
+  "message": "Explain binary search trees"
+}</pre>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "reply": "A binary search tree is a data structure..."
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method delete">DELETE</span>
+          <span class="docs-path">/api/conversations/{name}</span>
+        </div>
+        <p class="docs-p">Permanently delete a conversation and all its message history.</p>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{ "ok": true }</pre>
+      </div>
+
+      <!-- WebSocket -->
+      <div class="card">
+        <div class="card-title">WebSocket — Streaming</div>
+        <div class="docs-endpoint">
+          <span class="docs-method ws">WS</span>
+          <span class="docs-path">/ws/conversations/{name}?token=&lt;accessToken|apiKey&gt;</span>
+        </div>
+        <p class="docs-p">
+          Stream model replies token-by-token over a persistent WebSocket connection.
+          Pass your JWT access token or API key as the <code>token</code> query parameter.
+          The connection stays open across multiple turns — send a new message after receiving <code>"done"</code>.
+        </p>
+
+        <div class="docs-label">Client → Server (send message)</div>
+        <pre class="docs-pre">{ "message": "What is Kotlin coroutines?" }</pre>
+
+        <div class="docs-label">Server → Client (streaming token)</div>
+        <pre class="docs-pre">{ "type": "token", "token": "Kotlin" }
+{ "type": "token", "token": " coroutines" }
+<span class="docs-comment">// ... one frame per token</span></pre>
+
+        <div class="docs-label">Server → Client (turn complete)</div>
+        <pre class="docs-pre">{ "type": "done" }</pre>
+
+        <div class="docs-label">Server → Client (error)</div>
+        <pre class="docs-pre">{ "type": "error", "error": "Conversation 'my-chat' not found" }</pre>
+
+        <div class="docs-label" style="margin-top:16px;">Example — JavaScript</div>
+        <pre class="docs-pre">const ws = new WebSocket(
+  'ws://localhost:8080/ws/conversations/my-chat?token=lrtlm_...'
+);
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ message: 'Hello!' }));
+};
+
+ws.onmessage = (evt) => {
+  const frame = JSON.parse(evt.data);
+  if (frame.type === 'token') process.stdout.write(frame.token);
+  if (frame.type === 'done')  console.log('\n[done]');
+  if (frame.type === 'error') console.error('[error]', frame.error);
+};</pre>
+      </div>
+
+      <!-- API Keys -->
+      <div class="card">
+        <div class="card-title">API Key Management</div>
+        <p class="docs-p">These endpoints require <strong>JWT only</strong> (<code>Authorization: Bearer &lt;accessToken&gt;</code>).</p>
+
+        <div class="docs-endpoint">
+          <span class="docs-method post">POST</span>
+          <span class="docs-path">/api/api-key/generate</span>
+        </div>
+        <p class="docs-p">Generate a new API key. The raw key is returned once — store it immediately.</p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{ "name": "mobile-client" }</pre>
+        <div class="docs-label">Response 201</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "key": "lrtlm_...",       <span class="docs-comment">// raw key — shown once only</span>
+  "id": "uuid",
+  "prefix": "lrtlm_Xx",
+  "name": "mobile-client"
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method get">GET</span>
+          <span class="docs-path">/api/api-key/list</span>
+        </div>
+        <p class="docs-p">List all API keys (active and revoked). Raw keys are never returned.</p>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{
+  "ok": true,
+  "keys": [
+    {
+      "id": "uuid",
+      "prefix": "lrtlm_Xx",
+      "name": "mobile-client",
+      "active": true,
+      "createdAt": 1700000000000,
+      "lastUsedAt": 1700000001000
+    }
+  ]
+}</pre>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method get">GET</span>
+          <span class="docs-path">/api/api-key/info?key=lrtlm_...</span>
+        </div>
+        <p class="docs-p">Look up metadata for a specific key by its raw value.</p>
+
+        <div class="docs-divider"></div>
+
+        <div class="docs-endpoint">
+          <span class="docs-method delete">DELETE</span>
+          <span class="docs-path">/api/api-key/revoke</span>
+        </div>
+        <p class="docs-p">Soft-revoke an API key. The record is kept for audit purposes.</p>
+        <div class="docs-label">Request body</div>
+        <pre class="docs-pre">{ "key": "lrtlm_..." }</pre>
+        <div class="docs-label">Response 200</div>
+        <pre class="docs-pre">{ "ok": true }</pre>
+      </div>
+
+      <!-- Error responses -->
+      <div class="card">
+        <div class="card-title">Error Responses</div>
+        <p class="docs-p">All errors follow the same structure:</p>
+        <pre class="docs-pre">{ "ok": false, "error": "Human-readable message" }</pre>
+        <table class="key-table" style="margin-top:12px;">
+          <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td>400</td><td>Bad request — missing or invalid field</td></tr>
+            <tr><td>401</td><td>Unauthorized — missing, invalid, or expired token</td></tr>
+            <tr><td>404</td><td>Resource not found</td></tr>
+            <tr><td>409</td><td>Conflict — resource already exists</td></tr>
+            <tr><td>503</td><td>Engine not ready — model is still loading</td></tr>
           </tbody>
         </table>
       </div>
+
     </div>
 
   </main>
-</div>
-
-<!-- ── Delete user confirmation modal ───────────────────────────────── -->
-<div class="modal-backdrop" id="delete-user-modal">
-  <div class="modal">
-    <h2>Delete user?</h2>
-    <p style="color:var(--text-dim);font-size:13px;margin-bottom:16px;">
-      This permanently deletes the account and revokes all their active sessions.
-    </p>
-    <div style="font-size:13px;margin-bottom:4px;">
-      Username: <strong id="delete-user-name" style="color:var(--text);"></strong>
-    </div>
-    <div id="delete-user-err" class="alert alert-error"></div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeDeleteUserModal()">Cancel</button>
-      <button class="btn btn-danger" onclick="confirmDeleteUser()">Delete</button>
-    </div>
-  </div>
 </div>
 
 <!-- ── New conversation modal ────────────────────────────────────────── -->

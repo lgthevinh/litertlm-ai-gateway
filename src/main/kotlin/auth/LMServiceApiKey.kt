@@ -7,7 +7,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 
-class LMApiKeyService(private val dao: DaoSqlite) {
+class LMServiceApiKey(private val dao: DaoSqlite) {
 
     companion object {
         private const val TAG = "LMApiKeyService"

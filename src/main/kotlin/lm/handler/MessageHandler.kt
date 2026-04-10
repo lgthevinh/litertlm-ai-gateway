@@ -1,0 +1,256 @@
+package org.thingai.app.aigateway.lm.handler
+
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.SamplerConfig
+import org.thingai.app.aigateway.engine.entity.LMStoredConversation
+import org.thingai.app.aigateway.engine.entity.LMStoredMessage
+import org.thingai.app.aigateway.engine.predefine.BuiltinConversationConfig
+import org.thingai.base.dao.exceptions.DaoException
+import org.thingai.base.log.ILog
+import org.thingai.platform.dao.DaoSqlite
+import java.util.UUID
+
+/**
+ * Handles all DB persistence for conversations and their message history.
+ *
+ * Responsibilities:
+ * - Store and retrieve [LMStoredConversation] config records
+ * - Store and retrieve [LMStoredMessage] history rows
+ * - Rebuild a [ConversationConfig] with truncated [initialMessages] for engine re-open
+ *
+ * No engine or inference knowledge lives here.
+ */
+class MessageHandler(private val dao: DaoSqlite) {
+
+    companion object {
+        private const val TAG = "MessageHandler"
+
+        /** Maximum number of messages (user + model combined) passed as initialMessages on re-open. */
+        const val HISTORY_LIMIT = 40
+    }
+
+    // ── Conversation lifecycle ────────────────────────────────────────────────
+
+    /**
+     * Persists a new conversation config record.
+     * @return `false` if [name] already exists in the DB or on insert failure.
+     */
+    fun saveConversation(record: LMStoredConversation): Boolean {
+        val existing = getConversation(record.name)
+        if (existing != null) {
+            ILog.d(TAG, "saveConversation: '${record.name}' already exists")
+            return false
+        }
+        return try {
+            dao.insert(record)
+            ILog.i(TAG, "saveConversation: '${record.name}' saved")
+            true
+        } catch (e: DaoException) {
+            ILog.e(TAG, "saveConversation: DB error: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Loads the stored config record for [name], or `null` if not found.
+     */
+    fun getConversation(name: String): LMStoredConversation? {
+        return try {
+            dao.query(LMStoredConversation::class.java, "name", name).firstOrNull()
+        } catch (e: DaoException) {
+            ILog.e(TAG, "getConversation: DB error: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Returns all stored conversation names, sorted newest-first.
+     */
+    fun listConversations(): List<String> {
+        return try {
+            dao.readAll(LMStoredConversation::class.java)
+                .sortedByDescending { it.createdAt }
+                .map { it.name }
+        } catch (e: DaoException) {
+            ILog.e(TAG, "listConversations: DB error: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Deletes the conversation config and all its message history from the DB.
+     * @return `true` if the conversation existed and was deleted.
+     */
+    fun deleteConversation(name: String): Boolean {
+        val record = getConversation(name) ?: run {
+            ILog.d(TAG, "deleteConversation: '$name' not found")
+            return false
+        }
+        return try {
+            // Delete all messages for this conversation
+            val messages = dao.query(LMStoredMessage::class.java, "conversationName", name)
+            messages.forEach { dao.delete(it) }
+
+            dao.delete(record)
+            ILog.i(TAG, "deleteConversation: '$name' deleted, ${messages.size} message(s) removed")
+            true
+        } catch (e: DaoException) {
+            ILog.e(TAG, "deleteConversation: DB error: ${e.message}")
+            false
+        }
+    }
+
+    // ── Message history ───────────────────────────────────────────────────────
+
+    /**
+     * Appends a user message and the model reply as a pair to the DB.
+     * Both share the same [seq] base — user is [seq], model is [seq] + 1.
+     *
+     * Call [nextSeq] first to get the correct base sequence number.
+     */
+    fun appendMessages(
+        conversationName: String,
+        userText: String,
+        modelText: String,
+        seq: Int
+    ) {
+        val now = System.currentTimeMillis()
+        try {
+            dao.insert(
+                LMStoredMessage(
+                    id               = UUID.randomUUID().toString(),
+                    conversationName = conversationName,
+                    role             = "user",
+                    text             = userText,
+                    seq              = seq,
+                    createdAt        = now
+                )
+            )
+            dao.insert(
+                LMStoredMessage(
+                    id               = UUID.randomUUID().toString(),
+                    conversationName = conversationName,
+                    role             = "model",
+                    text             = modelText,
+                    seq              = seq + 1,
+                    createdAt        = now
+                )
+            )
+            ILog.d(TAG, "appendMessages: 2 messages saved for '$conversationName' at seq=$seq")
+        } catch (e: DaoException) {
+            ILog.e(TAG, "appendMessages: DB error: ${e.message}")
+        }
+    }
+
+    /**
+     * Returns the next available sequence number for [conversationName].
+     * Returns 0 if no messages exist yet.
+     */
+    fun nextSeq(conversationName: String): Int {
+        return try {
+            val messages = dao.query(LMStoredMessage::class.java, "conversationName", conversationName)
+            if (messages.isEmpty()) 0 else messages.maxOf { it.seq } + 1
+        } catch (e: DaoException) {
+            ILog.e(TAG, "nextSeq: DB error: ${e.message}")
+            0
+        }
+    }
+
+    // ── Config reconstruction ─────────────────────────────────────────────────
+
+    /**
+     * Returns all stored messages for [conversationName] sorted by [seq] ascending,
+     * as raw [LMStoredMessage] records for API responses.
+     */
+    fun getHistory(conversationName: String): List<LMStoredMessage> {
+        return try {
+            dao.query(LMStoredMessage::class.java, "conversationName", conversationName)
+                .sortedBy { it.seq }
+        } catch (e: DaoException) {
+            ILog.e(TAG, "getHistory: DB error: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Loads the last [HISTORY_LIMIT] messages for [conversationName] ordered by [seq],
+     * maps them to [Message] objects, and returns a [ConversationConfig] ready for
+     * engine re-open.
+     *
+     * The [LMStoredConversation.systemInstruction] is applied if present; otherwise
+     * the builtin preset identified by [LMStoredConversation.configLabel] is used as
+     * the base and its sampler is overridden with the stored values.
+     */
+    fun buildConfig(conversationName: String): ConversationConfig? {
+        val record = getConversation(conversationName) ?: return null
+        val history = loadHistory(conversationName)
+        return buildConversationConfig(record, history)
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * Loads the last [HISTORY_LIMIT] messages for [conversationName], sorted by [seq] ascending.
+     */
+    private fun loadHistory(conversationName: String): List<Message> {
+        return try {
+            val all = dao.query(LMStoredMessage::class.java, "conversationName", conversationName)
+            all.sortedBy { it.seq }
+                .takeLast(HISTORY_LIMIT)
+                .map { it.toMessage() }
+        } catch (e: DaoException) {
+            ILog.e(TAG, "loadHistory: DB error: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Builds a [ConversationConfig] from a [LMStoredConversation] record and a history list.
+     *
+     * - If [LMStoredConversation.systemInstruction] is set → use it directly
+     * - Otherwise → derive system instruction from the builtin preset label
+     * - Sampler always uses the stored [topK]/[topP]/[temperature] values
+     */
+    private fun buildConversationConfig(
+        record: LMStoredConversation,
+        history: List<Message>
+    ): ConversationConfig {
+        val systemInstruction = record.systemInstruction?.takeIf { it.isNotBlank() }
+            ?: builtinInstruction(record.configLabel)
+
+        return ConversationConfig(
+            systemInstruction = Contents.of(systemInstruction),
+            initialMessages   = history,
+            samplerConfig     = SamplerConfig(
+                topK        = record.topK,
+                topP        = record.topP,
+                temperature = record.temperature
+            )
+        )
+    }
+
+    /**
+     * Extracts the system instruction text from a builtin preset by label.
+     * Falls back to ASSISTANT if the label is unrecognised.
+     */
+    private fun builtinInstruction(label: String): String {
+        val preset = when (label.trim().lowercase()) {
+            "coder"    -> BuiltinConversationConfig.CODER
+            "concise"  -> BuiltinConversationConfig.CONCISE
+            "creative" -> BuiltinConversationConfig.CREATIVE
+            else       -> BuiltinConversationConfig.ASSISTANT
+        }
+        // Extract the text from the preset's Contents — toString() returns the plain text
+        return preset.systemInstruction?.toString() ?: ""
+    }
+}
+
+// ── Extensions ────────────────────────────────────────────────────────────────
+
+/** Maps a [LMStoredMessage] row to a LiteRTLM [Message] for use in [ConversationConfig.initialMessages]. */
+private fun LMStoredMessage.toMessage(): Message = when (role) {
+    "model" -> Message.model(text)
+    else    -> Message.user(text)
+}

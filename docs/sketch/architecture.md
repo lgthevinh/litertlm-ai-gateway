@@ -1,516 +1,436 @@
 # LiteRTLM AI Gateway — Technical Architecture (AI Should not read this)
 
-> Version 0.3 | April 2026
+> Version 0.4 | April 2026
 > Single-instance, on-device AI gateway wrapping Google AI Edge LiteRTLM
 > Storage: DaoSqlite (desktopplatform) | Logging: ILogImpl (desktopplatform) | Cache: LRUCache (applicationbase)
+>
+> **Legend:** Sections marked `[IMPLEMENTED]` reflect the current working codebase.
+> Sections marked `[PLANNED]` are design targets not yet built.
 
 ---
 
-## 1. System Overview
+## 1. System Overview `[IMPLEMENTED]`
 
 ```
-                           +--------------------------+
-                           |      Client / Admin      |
-                           +-----------+--------------+
-                                       |
-                                  HTTP :8080
-                                       |
-+--------------------------------------v---------------------------------------+
-|                           Ktor Application                                   |
-|                                                                              |
-|  +------------------+  +-------------------+  +---------------------------+  |
-|  | Auth Middleware   |  | Rate Limit Middle |  | Content Negotiation       |  |
-|  | (API Key / Admin)|  | (Token Bucket)    |  | (JSON via kotlinx.serial) |  |
-|  +--------+---------+  +--------+----------+  +-------------+-------------+  |
-|           |                      |                           |                |
-|  +--------v----------------------v---------------------------v------------+  |
-|  |                         Route Layer                                    |  |
-|  |  /api/v1/conversations/*   /api/v1/models/*   /api/v1/tools/*         |  |
-|  |  /admin/*                  /admin/api/*        / (SPA static)         |  |
-|  +--------+-----------------------------------------------------------+  |  |
-|           |                                                              |  |
-|  +--------v----------------------------------------------------------+   |  |
-|  |                      Service Layer                                |   |  |
-|  |  ConversationService  ModelService  ToolService  PluginService    |   |  |
-|  |  ApiKeyService        UsageService  AdminService                  |   |  |
-|  +--------+----------------------------------------------------------+   |  |
-|           |                                                              |  |
-|  +--------v----------------------------------------------------------+   |  |
-|  |                      Engine Layer                                 |   |  |
-|  |  EngineManager (multi-model)                                      |   |  |
-|  |    +-> EngineInstance[gemma4-e2b] -> ConversationHandler          |   |  |
-|  |    +-> EngineInstance[gemma4-e4b] -> ConversationHandler          |   |  |
-|  |  ToolRegistry -> ToolExecutor -> LiteRTLM ToolManager             |   |  |
-|  |  PluginRegistry -> loaded plugins                                 |   |  |
-|  +--------+----------------------------------------------------------+   |  |
-|           |                                                              |  |
-|  +--------v----------------------------------------------------------+   |  |
-|  |                      Storage Layer (SQLite)                       |   |  |
-|  |  api_keys | conversations | messages | usage_logs | models_config |   |  |
-|  +------------------------------------------- ------------------------+   |  |
-+--------------------------------------------------------------------------+  |
-+---------------------------------------------------------------------------+
+                        +--------------------------+
+                        |   Client / Browser UI    |
+                        +-----------+--------------+
+                                    |
+                               HTTP/WS :8080
+                                    |
++-----------------------------------v--------------------------------------+
+|                          Ktor Application                                |
+|                                                                          |
+|  +---------------------+  +--------------------------------------------+|
+|  | AuthPlugin (JWT)    |  | DualAuthPlugin (JWT or API Key)             ||
+|  | ApiKeyPlugin        |  | — installed per route group, not globally   ||
+|  +----------+----------+  +-------------------+------------------------+||
+|             |                                  |                         |
+|  +----------v----------------------------------v---------------------+  |
+|  |                        Route Layer                                |  |
+|  |  /api/auth/*           /api/conversations/*   /api/api-key/*     |  |
+|  |  /ws/conversations/*   / (static UI)                             |  |
+|  +----------+----------------------------------------------------+--+  |
+|             |                                                     |     |
+|  +----------v--------------------------------------------------+  |     |
+|  |                     LMService (singleton)                   |  |     |
+|  |  setDao() / setEngineConfig() / start() / stop()           |  |     |
+|  |                                                             |  |     |
+|  |  +------------------+   +------------------+               |  |     |
+|  |  | ConversationHandler|  | MessageHandler   |               |  |     |
+|  |  | (orchestrator)   |   | (DB persistence) |               |  |     |
+|  |  +--------+---------+   +--------+---------+               |  |     |
+|  |           |                      |                          |  |     |
+|  |  +--------v----------------------v-+                        |  |     |
+|  |  |        EngineHandler            |                        |  |     |
+|  |  |  taskChannel: Channel<Task>     |                        |  |     |
+|  |  |  worker #0 ── Engine #0         |                        |  |     |
+|  |  |  worker #1 ── Engine #1         |                        |  |     |
+|  |  +---------------------------------+                        |  |     |
+|  +-------------------------------------------------------------+  |     |
+|                                                                    |     |
+|  +-----------------------------------+                             |     |
+|  |      Storage Layer (SQLite)       |<----------------------------+     |
+|  |  lm_conversations | lm_messages   |                                   |
+|  |  api_keys                         |                                   |
+|  +-----------------------------------+                                   |
++--------------------------------------------------------------------------+
+```
+
+### Request flow — WebSocket streaming
+
+```
+Client connects: WS /ws/conversations/{name}?token=...
+    │
+    ├─ DualAuthPlugin validates token (JWT or API key)
+    ├─ Engine ready check (503 if LMService.conversationHandler == null)
+    │
+    │  [message loop — connection stays open for full conversation lifetime]
+    │
+    Client sends: { "message": "Hello" }
+    │
+    ▼
+ConversationHandler.sendMessage(name, message): Flow<WsChunk>
+    │
+    ├─ MessageHandler.buildConfig(name)
+    │    ├─ getConversation(name)   → LMStoredConversation  (config + sampler)
+    │    └─ loadHistory(name)       → List<Message>  (last 40, ordered by seq)
+    │         └─ ConversationConfig(systemInstruction, initialMessages, samplerConfig)
+    │
+    ├─ ConversationTask(config, message) enqueued to EngineHandler.taskChannel
+    │    └─ suspends until a worker picks it up (queues if both busy)
+    │
+    Worker #N picks task:
+    ├─ engine.createConversation(config)   — transient native object
+    ├─ conversation.sendMessageAsync(message)
+    │    ├─ WsChunk.Token  → emit to flow → WS frame { "type": "token", "token": "..." }
+    │    ├─ WsChunk.Token  → ...
+    │    └─ (inference complete)
+    ├─ WsChunk.Done emitted
+    │    └─ ConversationHandler persists user + model messages via MessageHandler
+    │         appendMessages(name, userText, modelText, nextSeq)
+    ├─ conversation.close()     — frees engine resources
+    │
+    WS frame: { "type": "done" }
+    │
+    [client sends next message — same WS connection, new inference cycle]
+```
+
+### Request flow — REST (blocking)
+
+```
+POST /api/conversations/{name}/messages  { "message": "..." }
+    │
+    ▼
+Same ConversationHandler.sendMessage() flow as above
+    │
+    collect all WsChunk.Token → join into full reply string
+    │
+    ▼
+200 { "ok": true, "reply": "..." }
 ```
 
 ---
 
-## 2. Package Structure
+## 2. Package Structure `[IMPLEMENTED]`
 
 ```
 org.thingai.app.aigateway/
-|
-+-- Main.kt                              # Ktor server bootstrap
-|
-+-- api/
-|   +-- middleware/
-|   |   +-- AuthMiddleware.kt             # API key validation plugin
-|   |   +-- RateLimitMiddleware.kt        # Per-key rate limiting plugin
-|   |   +-- AdminAuthMiddleware.kt        # Admin session/token auth
-|   |
-|   +-- route/
-|   |   +-- Route.kt                      # Route registration (existing, extended)
-|   |   +-- RouteConfig.kt               # GET / health, GET /config/* (existing)
-|   |   +-- RouteConversation.kt          # /api/v1/conversations/* (existing, refactored)
-|   |   +-- RouteModel.kt                # /api/v1/models/*
-|   |   +-- RouteTool.kt                 # /api/v1/tools/*
-|   |   +-- RouteAdmin.kt                # /admin/api/*
-|   |   +-- RouteAdminDashboard.kt        # /admin/* (SPA static files)
-|   |
-|   +-- model/                            # Request/response DTOs
-|   |   +-- ApiResponse.kt               # Unified envelope { ok, data, error }
-|   |   +-- ConversationDto.kt           # Conversation request/response models
-|   |   +-- ModelDto.kt                  # Model info DTOs
-|   |   +-- ToolDto.kt                   # Tool registration DTOs
-|   |   +-- UsageDto.kt                  # Usage statistics DTOs
-|   |   +-- AdminDto.kt                  # Admin endpoint DTOs
-|
-+-- auth/
-|   +-- ApiKey.kt                         # API key entity
-|   +-- ApiKeyService.kt                  # Key generation, validation, revocation
-|   +-- Permission.kt                     # Permission enum (CHAT, ADMIN, MODEL_SWITCH, TOOL_EXEC)
-|
-+-- conversation/
-|   +-- ConversationEntity.kt             # Persistent conversation metadata
-|   +-- MessageEntity.kt                  # Persistent message record
-|   +-- ConversationService.kt            # Orchestrates engine + storage
-|   +-- ConversationRepository.kt         # SQLite CRUD for conversations/messages
-|
-+-- engine/
-|   +-- LMEngine.kt                       # Refactored -> EngineManager delegate
-|   +-- EngineManager.kt                  # Multi-model engine pool
-|   +-- EngineInstance.kt                 # Single engine + its conversations
-|   +-- define/
-|   |   +-- PreDefineConversationConfig.kt  # (existing)
-|   +-- entity/
-|   |   +-- LMConversation.kt            # (existing, will be used)
-|   +-- handler/
-|       +-- ConversationHandler.kt        # (existing, scoped per engine)
-|       +-- ToolHandler.kt               # (existing stub -> implemented)
-|
-+-- tool/
-|   +-- Tool.kt                           # Gateway tool interface
-|   +-- ToolDescriptor.kt                # Name, description, parameter schema
-|   +-- ToolContext.kt                    # Execution context (conversation, user, etc.)
-|   +-- ToolResult.kt                    # Execution result wrapper
-|   +-- ToolRegistry.kt                  # Register/unregister/lookup tools
-|   +-- ToolExecutor.kt                  # Dispatch execution, bridge to LiteRTLM ToolManager
-|   +-- builtin/                          # Built-in tools
-|       +-- DateTimeTool.kt
-|       +-- ConversationHistoryTool.kt
-|
-+-- plugin/
-|   +-- Plugin.kt                         # Plugin lifecycle interface
-|   +-- PluginContext.kt                  # What plugins can access
-|   +-- PluginRegistry.kt                # Discovery, load, shutdown
-|   +-- PluginConfig.kt                  # Per-plugin configuration
-|   +-- connector/                        # Connector type interfaces
-|       +-- VectorDatabaseConnector.kt
-|       +-- KnowledgeBaseConnector.kt
-|       +-- ServiceConnector.kt
-|
-+-- ratelimit/
-|   +-- RateLimiter.kt                    # Token bucket implementation
-|   +-- RateLimitConfig.kt               # Limits per tier
-|
-+-- usage/
-|   +-- UsageRecord.kt                    # Single usage event entity
-|   +-- UsageService.kt                  # Record and query usage
-|   +-- UsageRepository.kt               # SQLite persistence
-|
-+-- storage/
-|   +-- DatabaseManager.kt                # DaoSqlite lifecycle, schema init, migrations
-|   +-- FileStore.kt                      # DaoFile wrapper for config/state JSON files
-|   +-- entity/                           # @DaoTable / @DaoColumn annotated POJOs
-|       +-- ApiKeyEntity.kt
-|       +-- ConversationRecord.kt
-|       +-- MessageRecord.kt
-|       +-- UsageLogRecord.kt
-|       +-- ModelRegistryRecord.kt
-|
-+-- log/
-|   +-- AppLog.kt                         # ILogImpl singleton initializer + tag constants
-|
-+-- config/
-|   +-- AppConfig.kt                      # Typed application config
-|   +-- ModelConfig.kt                    # Per-model config entries
-|
-+-- callback/
-|   +-- RequestCallback.kt               # (existing)
-|
-+-- admin/
-    +-- AdminService.kt                   # System status, metrics aggregation
-    +-- DashboardResources.kt             # SPA static file serving config
+│
+├── Main.kt                              # Ktor server bootstrap
+├── LMApplication.kt                     # Service bootstrap: DB init, auth, engine start
+│
+├── api/
+│   ├── plugin/
+│   │   └── AuthPlugin.kt               # AuthPlugin, ApiKeyPlugin, DualAuthPlugin
+│   │
+│   └── route/
+│       ├── Route.kt                     # Route registration
+│       ├── RouteConfig.kt              # Static UI serving
+│       ├── RouteAuth.kt                # POST /auth/login|refresh|logout
+│       ├── RouteConversation.kt        # GET|POST /conversations, GET|POST|DELETE /{name}/messages
+│       ├── RouteApiKey.kt              # POST /api-key/generate, GET /list|info, DELETE /revoke
+│       ├── RouteWebSocket.kt           # WS /ws/conversations/{name}
+│       └── dto/
+│           ├── RouteDtoCommon.kt       # OkResponse, ApiErrorResponse
+│           ├── RouteDtoAuth.kt         # LoginRequest/Response, RefreshRequest/Response, LogoutRequest
+│           ├── RouteDtoConversation.kt # CreateConversation*, ListConversations*, GetMessages*, SendMessage*
+│           ├── RouteDtoAppKey.kt       # GenerateKey*, ListKeys*, RevokeKey*, KeyInfo*
+│           └── RouteDtoWebSocket.kt    # WsIncomingMessage, WsTokenFrame, WsDoneFrame, WsErrorFrame
+│
+├── auth/
+│   ├── LMApiKey.kt                     # @DaoTable entity: id, keyHash, keyPrefix, name, active, timestamps
+│   ├── LMServiceApiKey.kt              # generateApiKey, validateApiKey, revokeApiKey, listApiKeys
+│   ├── LMServiceAuth.kt               # Single-user JWT auth: login, refresh, logout, validateAccessToken
+│   └── LMAuth.kt                       # LMAuthJwt data class
+│
+├── lm/
+│   ├── LMService.kt                    # Singleton: setDao, setEngineConfig, start, stop
+│   │                                   # Constructs and owns: EngineHandler, MessageHandler, ConversationHandler
+│   │
+│   ├── handler/
+│   │   ├── WsChunk.kt                  # sealed class: Token(text), Done, Error(message)
+│   │   ├── ConversationHandler.kt      # createConversation, deleteConversation, listConversations,
+│   │   │                               # hasConversation, getHistory, sendMessage → Flow<WsChunk>
+│   │   ├── MessageHandler.kt           # saveConversation, getConversation, listConversations,
+│   │   │                               # deleteConversation, appendMessages, nextSeq,
+│   │   │                               # getHistory, buildConfig
+│   │   └── EngineHandler.kt            # ENGINE_COUNT=2, taskChannel, launchWorker, submit, processTask
+│   │
+│   ├── entity/
+│   │   ├── LMStoredConversation.kt     # @DaoTable lm_conversations: name(PK), systemInstruction,
+│   │   │                               # configLabel, topK, topP(Double), temperature(Double), createdAt
+│   │   └── LMStoredMessage.kt          # @DaoTable lm_messages: id(PK), conversationName, role,
+│   │                                   # text, seq, createdAt
+│   │
+│   └── builtin/
+│       └── BuiltinConversationConfig.kt # ASSISTANT, CODER, CONCISE, CREATIVE presets
+│
+├── utils/
+│   ├── EnvConfig.kt                    # .env file loader
+│   └── JsonUtils.kt                    # Gson-based JSON helpers
+│
+└── callback/
+    └── RequestCallback.kt              # onSuccess / onError interface
 ```
 
 ---
 
 ## 3. Core Module Specifications
 
-### 3.1 Authentication & API Key Management
+> Sections 3.1–3.3 reflect the current implementation.
+> Sections 3.4–3.9 are planned features not yet built.
+
+### 3.1 Authentication & API Key Management `[IMPLEMENTED]`
+
+#### Single-user JWT Auth (`LMServiceAuth`)
+
+Credentials are configured via environment variables — no DB table for users.
+
+```
+ENV vars:
+  AUTH_USERNAME=admin         # single admin username
+  AUTH_PASSWORD=...           # admin password
+  JWT_SECRET=...              # HS256 signing secret
+```
+
+```kotlin
+class LMServiceAuth(jwtSecret: String, username: String, password: String) {
+    // In-memory: only currentRefreshJti tracked (@Volatile)
+    // Access token TTL:  15 minutes
+    // Refresh token TTL: 7 days (rotates on every refresh)
+
+    fun login(username, password): LMAuthJwt?     // returns { accessToken, refreshToken }
+    fun refresh(refreshToken): LMAuthJwt?          // rotates JTI, returns new pair
+    fun logout(refreshToken): Boolean              // clears currentRefreshJti
+    fun validateAccessToken(token): String?        // returns username or null
+}
+```
+
+JWT payload: `{ sub, jti, iat, exp, type: "access"|"refresh" }`
+Algorithm: HS256 (HMAC-SHA256), built without external JWT library.
+
+#### API Key Management (`LMServiceApiKey`)
+
+```kotlin
+// LMApiKey @DaoTable: lm_api_keys (stored in lm_application.db)
+data class LMApiKey(
+    var id: String,          // UUID
+    var keyHash: String,     // SHA-256 of raw key — never stored in plaintext
+    var keyPrefix: String,   // first 8 chars e.g. "lrtlm_a3" — for display only
+    var name: String,        // human label
+    var active: Boolean,
+    var createdAt: Long,
+    var lastUsedAt: Long?
+)
+
+class LMServiceApiKey(dao: DaoSqlite) {
+    fun generateApiKey(name): GeneratedKey?        // returns { rawKey, apiKey record }
+    fun validateApiKey(rawKey): Boolean            // hashes + checks active
+    fun revokeApiKey(rawKey): Boolean
+    fun listApiKeys(): List<LMApiKey>
+    fun getApiKeyInfo(rawKey): LMApiKey?
+}
+```
+
+Raw key format: `lrtlm_` + 48 random alphanumeric chars.
+
+#### Auth Plugins (Ktor route-scoped)
+
+| Plugin | Header | Used on |
+|---|---|---|
+| `AuthPlugin` | `Authorization: Bearer <accessToken>` | `/api/api-key/*` |
+| `DualAuthPlugin` | `Authorization: Bearer <accessToken\|apiKey>` | `/api/conversations/*`, WS |
+
+---
+
+### 3.2 Conversation & Message Architecture `[IMPLEMENTED]`
 
 #### Entities
 
 ```kotlin
-// auth/ApiKey.kt
-data class ApiKey(
-    val id: String,              // UUID
-    val keyHash: String,         // SHA-256 hash of the raw key
-    val keyPrefix: String,       // First 8 chars for identification (e.g. "lrtlm_ab")
-    val name: String,            // Human-readable label
-    val permissions: Set<Permission>,
-    val rateLimitTier: String,   // "default", "premium", "unlimited"
-    val active: Boolean,
-    val createdAt: Long,         // epoch millis
-    val lastUsedAt: Long?
+// lm/entity/LMStoredConversation.kt  →  @DaoTable("lm_conversations")
+data class LMStoredConversation(
+    var name: String,               // PK — user-provided unique name
+    var systemInstruction: String?, // null → use builtin preset
+    var configLabel: String,        // "assistant"|"coder"|"concise"|"creative"|"custom"
+    var topK: Int,
+    var topP: Double,               // Double — SQLite stores REAL as Double
+    var temperature: Double,
+    var createdAt: Long
 )
 
-// auth/Permission.kt
-enum class Permission {
-    CHAT,           // Send messages to conversations
-    CONVERSATION,   // Create/delete conversations
-    MODEL_SWITCH,   // Change active model for a conversation
-    TOOL_EXEC,      // Execute tools
-    ADMIN           // Access admin endpoints
-}
+// lm/entity/LMStoredMessage.kt  →  @DaoTable("lm_messages")
+data class LMStoredMessage(
+    var id: String,               // PK — UUID
+    var conversationName: String, // FK → LMStoredConversation.name
+    var role: String,             // "user" | "model"
+    var text: String,
+    var seq: Int,                 // monotonically increasing within conversation
+                                  // user msg = seq N, model reply = seq N+1
+    var createdAt: Long
+)
 ```
 
-#### Service Interface
+#### MessageHandler — DB layer
 
-```kotlin
-// auth/ApiKeyService.kt
-class ApiKeyService(private val dao: DaoSqlite) : org.thingai.base.Service() {
+```
+MessageHandler(dao: DaoSqlite)
 
-    init {
-        name = "ApiKeyService"
-        version = "1.0"
-    }
-
-    override fun onServiceInit() {
-        ILog.i(name, "ApiKeyService ready")
-    }
-
-    // Returns the raw key (only time it's visible). Stores hashed.
-    fun createKey(name: String, permissions: Set<Permission>,
-                  rateLimitTier: String = "default"): Pair<ApiKey, String>
-
-    fun validateKey(rawKey: String): ApiKey?   // null = invalid/inactive
-
-    fun revokeKey(id: String): Boolean
-
-    fun listKeys(): List<ApiKey>               // Never exposes hash
-
-    fun updateLastUsed(id: String)
-}
+saveConversation(record)           → insert LMStoredConversation; false if name exists
+getConversation(name)              → query by PK
+listConversations()                → readAll, sort by createdAt desc, return names
+deleteConversation(name)           → delete all lm_messages + the lm_conversations row
+appendMessages(name, user, model, seq) → insert 2 rows (seq=N user, seq=N+1 model)
+nextSeq(name)                      → max(seq) + 1, or 0 if no messages
+getHistory(name)                   → all rows for conversation, sorted by seq asc
+buildConfig(name)                  → getConversation + loadHistory → ConversationConfig
 ```
 
-#### Key Format
+`buildConfig` constructs a `ConversationConfig` ready for engine re-open:
+- `systemInstruction` → `Contents.of(text)` (custom) or from `BuiltinConversationConfig` preset
+- `initialMessages` → last 40 `LMStoredMessage` rows mapped to `Message.user()` / `Message.model()`
+- `samplerConfig` → `SamplerConfig(topK, topP, temperature)` from stored values
 
-Raw keys follow the pattern: `lrtlm_` + 48 random alphanumeric characters.
-Example: `lrtlm_a3Bf9kLm2xPq7Rv1Wy4Zn8Cd6Eh0Gj5Il3Ko9Mt2Nu`
+#### BuiltinConversationConfig presets
 
-Only the SHA-256 hash is stored. The `keyPrefix` field stores the first 8 characters (`lrtlm_a3`) for display/identification in the admin dashboard without exposing the full key.
+| Label | topK | topP | temperature | Purpose |
+|---|---|---|---|---|
+| `assistant` | 40 | 0.95 | 0.8 | General Q&A |
+| `coder` | 10 | 0.9 | 0.3 | Deterministic code output |
+| `concise` | 10 | 0.85 | 0.2 | Brief factual answers |
+| `creative` | 80 | 0.98 | 1.2 | Storytelling / brainstorming |
 
-#### Auth Middleware
+#### ConversationHandler — orchestrator
 
-```kotlin
-// api/middleware/AuthMiddleware.kt
-// Installed as a Ktor plugin on /api/v1/* routes
+```
+ConversationHandler(messageHandler, engineHandler)
 
-val ApiKeyAuth = createRouteScopedPlugin("ApiKeyAuth") {
-    on(AuthenticationChecked) {
-        // Extract key from: Authorization: Bearer lrtlm_xxx
-        // OR query param: ?api_key=lrtlm_xxx
-        // Validate via ApiKeyService.validateKey()
-        // Store validated ApiKey in call.attributes for downstream use
-        // Reject with 401 if missing, 403 if insufficient permissions
-    }
-}
+createConversation(name, systemInstruction?, configLabel, topK, topP, temperature)
+    → builds LMStoredConversation record
+    → delegates to messageHandler.saveConversation()
+
+deleteConversation(name)   → messageHandler.deleteConversation()
+hasConversation(name)      → messageHandler.getConversation(name) != null
+listConversations()        → messageHandler.listConversations()
+getHistory(name)           → messageHandler.getHistory(name)  [for GET /messages API]
+
+sendMessage(name, message): Flow<WsChunk>
+    1. messageHandler.buildConfig(name)           → null → emit Error, return
+    2. ConversationTask(config, message) created
+    3. engineHandler.submit(task)                 → Flow<WsChunk> (queues if busy)
+    4. collect:
+         Token  → accumulate to replyBuffer + emit
+         Done   → appendMessages(name, message, replyBuffer, nextSeq) + emit Done
+         Error  → emit Error (no persistence — incomplete reply discarded)
 ```
 
-#### Admin Authentication
+#### Key design decisions
 
-Admin endpoints use a separate mechanism — a master admin token defined in the application config (`admin.token`). This is intentionally simple: the gateway runs on-device, admin access is local.
-
-```kotlin
-// api/middleware/AdminAuthMiddleware.kt
-// Checks: Authorization: Bearer <admin-token>
-// Configured in application.conf: admin.token = "..."
-// If not configured, admin endpoints are disabled (safe default)
-```
+- **No native `Conversation` object is ever stored** — all LiteRTLM state is transient, created and closed inside a single `processTask` call
+- **History replay on every send** — `initialMessages` in `ConversationConfig` carries the last 40 messages, so the model sees context without an open native session
+- **Persistence only on success** — if inference errors, neither the user message nor the partial model reply is persisted, keeping history clean
+- **`topP`/`temperature` stored as `Double`** — SQLite REAL maps to JVM `Double`; `Float` fields fail reflection-based DAO deserialization
 
 ---
 
-### 3.2 Conversation Management (Enhanced)
+### 3.3 Engine Pool Architecture `[IMPLEMENTED]`
 
-#### Entities
-
-```kotlin
-// conversation/ConversationEntity.kt
-data class ConversationEntity(
-    val id: String,                  // UUID
-    val name: String,                // User-provided name
-    val modelId: String,             // Which model this conversation uses
-    val systemInstruction: String,
-    val samplerConfig: SamplerConfigData, // Stored config snapshot
-    val apiKeyId: String,            // Owner key
-    val createdAt: Long,
-    val updatedAt: Long,
-    val messageCount: Int,
-    val active: Boolean              // false = soft-deleted / closed
-)
-
-// conversation/MessageEntity.kt
-data class MessageEntity(
-    val id: String,                  // UUID
-    val conversationId: String,
-    val role: String,                // "user", "model", "system", "tool"
-    val content: String,             // Text content
-    val toolCallId: String?,         // If this is a tool response
-    val tokenCount: Int?,            // Estimated tokens (for usage tracking)
-    val createdAt: Long
-)
-
-data class SamplerConfigData(
-    val topK: Int = 10,
-    val topP: Double = 0.95,
-    val temperature: Double = 0.8
-)
-```
-
-#### Reconciling In-Memory and Persistent State
-
-LiteRTLM `Conversation` objects are in-memory and hold native JNI handles. They cannot be serialized. The architecture uses a **write-through cache** pattern:
-
-```
-Client sends message
-    |
-    v
-ConversationService.sendMessage(conversationId, text)
-    |
-    +-- 1. Look up active LiteRTLM Conversation from EngineInstance
-    |       (if not loaded, reconstruct from stored history — see below)
-    |
-    +-- 2. conversation.sendMessage(text)  [blocking, runs inference]
-    |
-    +-- 3. Persist user message + model response to SQLite (async)
-    |
-    +-- 4. Update conversation metadata (updatedAt, messageCount)
-    |
-    +-- Return response to client
-```
-
-**Cold-start reconstruction:** When a conversation exists in SQLite but has no live `Conversation` object (e.g. after server restart), the service:
-1. Creates a new LiteRTLM `Conversation` with the stored `ConversationConfig`
-2. Replays the stored message history as `initialMessages` in the config
-3. Caches the live object for subsequent use
-
-**Eviction:** When memory is constrained, idle conversations (no message for N minutes) can have their live `Conversation` object closed. The persistent state in SQLite allows reconstruction on next access.
-
-#### History Compaction
-
-For long conversations, storing every message is expensive for reconstruction. The compaction strategy:
-
-- **Full history** is always stored in SQLite (never deleted)
-- **Reconstruction window**: Only the last N messages (configurable, default 50) are replayed as `initialMessages` when cold-starting
-- **Summary checkpoints**: Optionally, every M messages (e.g. 100), the model generates a summary of the conversation so far. This summary becomes the starting context for reconstruction, followed by the recent window.
-
-#### Repository
+#### EngineHandler — fixed 2-engine pool with task queue
 
 ```kotlin
-// conversation/ConversationRepository.kt
-class ConversationRepository(private val dao: DaoSqlite) {
+class EngineHandler(engineConfig: EngineConfig) {
+    companion object { const val ENGINE_COUNT = 2 }
 
-    fun create(entity: ConversationEntity)
-    fun findById(id: String): ConversationEntity?
-    fun findByApiKey(apiKeyId: String): List<ConversationEntity>
-    fun listActive(): List<ConversationEntity>
-    fun updateMetadata(id: String, updatedAt: Long, messageCount: Int)
-    fun softDelete(id: String)
+    private val taskChannel = Channel<ConversationTask>(Channel.UNLIMITED)
+    private val engines     = mutableListOf<Engine>()
+    private val scope       = CoroutineScope(Dispatchers.Default)
+}
 
-    // Messages
-    fun appendMessage(message: MessageEntity)
-    fun getMessages(conversationId: String, limit: Int = 50,
-                    offset: Int = 0): List<MessageEntity>
-    fun getMessageCount(conversationId: String): Int
-    fun getRecentMessages(conversationId: String, count: Int): List<MessageEntity>
+data class ConversationTask(
+    val config: ConversationConfig,
+    val message: String,
+    val reply: Channel<WsChunk> = Channel(Channel.UNLIMITED)
+)
+```
+
+**Startup (`start`):**
+```
+repeat(ENGINE_COUNT):
+    engine = Engine(engineConfig)
+    engine.initialize()             // blocking — loads model weights
+    engines.add(engine)
+    launchWorker(index, engine)     // one coroutine per engine
+onReady(true)
+```
+
+**Worker loop:**
+```kotlin
+for (task in taskChannel) {   // suspends when queue empty; picks next task when free
+    processTask(index, engine, task)
 }
 ```
 
-#### Service
-
-```kotlin
-// conversation/ConversationService.kt
-class ConversationService(
-    private val engineManager: EngineManager,
-    private val repository: ConversationRepository,
-    private val usageService: UsageService,
-    private val toolExecutor: ToolExecutor
-) {
-    // Creates persistent record + live LiteRTLM conversation
-    fun createConversation(
-        name: String, modelId: String, apiKeyId: String,
-        systemInstruction: String, samplerConfig: SamplerConfigData,
-        tools: List<String> = emptyList()  // Tool names to bind
-    ): ConversationEntity
-
-    // Sends message, persists both sides, tracks usage
-    suspend fun sendMessage(conversationId: String, text: String): MessageEntity
-
-    // Streaming variant — returns Flow of partial responses
-    suspend fun sendMessageStream(conversationId: String, text: String):
-        Flow<String>
-
-    fun getConversation(id: String): ConversationEntity?
-    fun listConversations(apiKeyId: String): List<ConversationEntity>
-    fun getHistory(conversationId: String, limit: Int, offset: Int):
-        List<MessageEntity>
-
-    fun closeConversation(id: String)
-
-    // Bind/unbind tools to a specific conversation
-    fun bindTool(conversationId: String, toolName: String)
-    fun unbindTool(conversationId: String, toolName: String)
-}
+**processTask:**
 ```
+conversation = engine.createConversation(task.config)
+    └─ includes initialMessages (history replay)
 
----
-
-### 3.3 Engine & Model Management
-
-#### Multi-Model Strategy
-
-Since LiteRTLM binds one model per `Engine`, supporting multiple models requires multiple `Engine` instances. The `EngineManager` maintains a pool:
-
-```
-EngineManager
-  |
-  +-- engines: Map<String, EngineInstance>
-  |     "gemma4-e2b" -> EngineInstance(engine, handler, modelConfig)
-  |     "gemma4-e4b" -> EngineInstance(engine, handler, modelConfig)
-  |
-  +-- modelRegistry: Map<String, ModelConfig>
-        (all known models, loaded or not)
-```
-
-#### Entities
-
-```kotlin
-// config/ModelConfig.kt
-data class ModelConfig(
-    val id: String,              // "gemma4-e4b"
-    val name: String,            // "Gemma 4 E4B Instruct"
-    val path: String,            // Filesystem path to .litertlm file
-    val backend: BackendType,    // CPU, GPU, GPU_ARTISAN, NPU
-    val cpuThreads: Int?,        // For CPU backend
-    val defaultSampler: SamplerConfigData,
-    val maxConversations: Int,   // Max concurrent conversations on this engine
-    val autoLoad: Boolean        // Load on startup?
-)
-
-enum class BackendType { CPU, GPU, GPU_ARTISAN, NPU }
-```
-
-#### EngineInstance
-
-```kotlin
-// engine/EngineInstance.kt
-class EngineInstance(
-    val modelConfig: ModelConfig,
-    private val engine: Engine,
-    val conversationHandler: ConversationHandler
-) : AutoCloseable {
-
-    val isReady: Boolean          // Engine initialized and healthy
-    val activeConversations: Int  // Current count
-
-    override fun close() {
-        conversationHandler.closeAll()
-        engine.close()
+conversation.sendMessageAsync(task.message)
+    .catch { e →
+        task.reply.send(WsChunk.Error(...))
+        inferenceError = true
     }
-}
+    .collect { token → task.reply.send(WsChunk.Token(token.toString())) }
+
+if (!inferenceError) task.reply.send(WsChunk.Done)
+
+finally:
+    conversation.close()   // release engine resources
+    task.reply.close()     // signals Flow completion to caller
 ```
 
-#### EngineManager
+**submit(task): Flow<WsChunk>**
+```
+taskChannel.send(task)     // enqueue — never blocks (UNLIMITED channel)
+for (chunk in task.reply): // suspends here until worker closes reply channel
+    emit(chunk)
+    if chunk is Done or Error → break
+```
+
+**Concurrency model:**
+- Workers compete for tasks naturally via `Channel` fan-out — no explicit scheduling
+- Each worker exclusively owns one `Engine` — zero sharing, zero locking during inference
+- If both workers are busy, callers suspend at `taskChannel.send` until a worker finishes and loops
+- Queue is unbounded — no request is ever rejected; worst-case latency grows with queue depth
+
+#### LMService — wiring singleton
 
 ```kotlin
-// engine/EngineManager.kt
-object EngineManager {
+object LMService {
+    var conversationHandler: ConversationHandler?   // null until start() succeeds
 
-    private val engines = ConcurrentHashMap<String, EngineInstance>()
-    private val modelRegistry = ConcurrentHashMap<String, ModelConfig>()
+    fun setDao(dao: DaoSqlite)
+    fun setEngineConfig(config: EngineConfig)
 
-    // Register a model in the registry (does not load it)
-    fun registerModel(config: ModelConfig)
+    fun start(onReady: (Boolean) -> Unit):
+        // stops previous EngineHandler if any
+        // creates: EngineHandler + MessageHandler + ConversationHandler
+        // calls engineHandler.start { success →
+        //     if success: assigns conversationHandler
+        // }
 
-    // Load a model — creates Engine, initializes, creates EngineInstance
-    suspend fun loadModel(modelId: String): EngineInstance
-
-    // Unload a model — closes all conversations, closes engine
-    suspend fun unloadModel(modelId: String)
-
-    // Get a loaded engine instance
-    fun getEngine(modelId: String): EngineInstance?
-
-    // Get the default engine (first loaded, or configured default)
-    fun getDefaultEngine(): EngineInstance?
-
-    // List all registered models with their load status
-    fun listModels(): List<ModelStatus>
-
-    // Reload a model (unload + load) — for config changes
-    suspend fun reloadModel(modelId: String)
+    fun stop():
+        // engineHandler.stop() → closes taskChannel + all Engine objects
+        // conversationHandler = null
 }
-
-data class ModelStatus(
-    val config: ModelConfig,
-    val loaded: Boolean,
-    val activeConversations: Int,
-    val memoryEstimate: Long?   // bytes, if available
-)
 ```
 
-#### Dynamic Loading Flow
-
-```
-Admin calls POST /admin/api/models/gemma4-e2b/load
-    |
-    v
-EngineManager.loadModel("gemma4-e2b")
-    |
-    +-- Look up ModelConfig from registry
-    +-- Create EngineConfig(path, backend)
-    +-- engine = Engine(engineConfig)
-    +-- engine.initialize()          // Heavy — blocks on model load
-    +-- handler = ConversationHandler(engine)
-    +-- Store EngineInstance in engines map
-    +-- Return success
-```
-
-**Conversation-to-model binding:** Each conversation is bound to a specific model at creation time (`ConversationEntity.modelId`). The conversation routes through the corresponding `EngineInstance`. Switching a conversation's model requires closing the live `Conversation` and reconstructing it on the new engine.
+Routes check `LMService.conversationHandler == null` and return `503 Service Unavailable` during model load.
 
 ---
 
-### 3.4 Tool Execution Framework
+### 3.4 Tool Execution Framework `[PLANNED]`
 
 #### Design
 
@@ -671,7 +591,7 @@ class ConversationHistoryTool(private val repository: ConversationRepository) : 
 
 ---
 
-### 3.5 Plugin Architecture (External Service Integration)
+### 3.5 Plugin Architecture (External Service Integration) `[PLANNED]`
 
 #### Plugin Lifecycle
 
@@ -854,7 +774,7 @@ class ChromaDBPlugin : Plugin, VectorDatabaseConnector {
 
 ---
 
-### 3.6 Rate Limiting & Usage Tracking
+### 3.6 Rate Limiting & Usage Tracking `[PLANNED]`
 
 #### Rate Limiter
 
@@ -955,7 +875,7 @@ Usage is recorded asynchronously — the `UsageService.record()` method dispatch
 
 ---
 
-### 3.7 Admin Dashboard
+### 3.7 Admin Dashboard `[PLANNED]`
 
 #### SPA Architecture
 
@@ -983,7 +903,7 @@ All under `/admin/api/*`, protected by `AdminAuthMiddleware`:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET    | /admin/api/status             | System status (uptime, memory, engine states) |
+| GET    | /admin/api/status             | System status (uptime, memory, lm states) |
 | GET    | /admin/api/models             | List all models with load status |
 | POST   | /admin/api/models/{id}/load   | Load a model |
 | POST   | /admin/api/models/{id}/unload | Unload a model |
@@ -999,7 +919,7 @@ All under `/admin/api/*`, protected by `AdminAuthMiddleware`:
 
 ---
 
-### 3.8 Storage Layer
+### 3.8 Storage Layer `[PLANNED]`
 
 #### Technology
 
@@ -1341,8 +1261,8 @@ class FileStore(rootPath: String) {
 Live `Conversation` objects (LiteRTLM JNI handles) are cached using `LRUCache<String, Conversation>` from `applicationbase.jar`. When the cache is full the least-recently-used conversation is evicted; its state remains in SQLite and will be cold-reconstructed on next access.
 
 ```kotlin
-// engine/handler/ConversationHandler.kt  (updated)
-class ConversationHandler(private val engine: Engine) {
+// lm/handler/ConversationHandler.kt  (updated)
+class ConversationHandler(private val lm: Engine) {
 
     // LRUCache(maxSize, backingMap) — use ConcurrentHashMap as the backing store
     private val cache: LRUCache<String, Conversation> =
@@ -1365,7 +1285,7 @@ class ConversationHandler(private val engine: Engine) {
 
 ---
 
-### 3.9 Logging
+### 3.9 Logging `[PLANNED]`
 
 #### Library
 
@@ -1568,8 +1488,8 @@ Admin: POST /admin/api/models/gemma4-e2b/load
 EngineManager.loadModel("gemma4-e2b")
   |  Look up ModelConfig from registry
   |  Create Engine(EngineConfig(path, Backend.CPU()))
-  |  engine.initialize()       [heavy operation]
-  |  Create ConversationHandler(engine)
+  |  lm.initialize()       [heavy operation]
+  |  Create ConversationHandler(lm)
   |  Store EngineInstance
   |
   v
@@ -1581,7 +1501,7 @@ Client: POST /api/v1/conversations
   { "name": "fast-chat", "model": "gemma4-e2b" }
   |
   v
-ConversationService creates conversation bound to gemma4-e2b engine
+ConversationService creates conversation bound to gemma4-e2b lm
 ```
 
 ---
