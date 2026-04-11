@@ -338,7 +338,6 @@ function handleWsFrame(convName, frame) {
   const box = document.getElementById('chat-box');
 
   if (frame.type === 'busy') {
-    // Inference running detached — show thinking indicator
     state.streaming = true;
     document.getElementById('send-btn').disabled   = true;
     document.getElementById('chat-input').disabled = true;
@@ -346,23 +345,42 @@ function handleWsFrame(convName, frame) {
     return;
   }
 
+  if (frame.type === 'token') {
+    // First token — swap thinking bubble for streaming bubble
+    const thinking = box.querySelector('.thinking-bubble');
+    if (thinking) {
+      thinking.classList.remove('thinking-bubble');
+      thinking.querySelector('.msg-bubble').classList.remove('thinking');
+      thinking.querySelector('.msg-bubble').textContent = '';
+      thinking.classList.add('streaming-bubble');
+    }
+    const streaming = box.querySelector('.streaming-bubble .msg-bubble');
+    if (streaming) {
+      streaming.textContent += frame.token;
+      box.scrollTop = box.scrollHeight;
+    }
+    return;
+  }
+
   if (frame.type === 'done') {
-    removeThinkingBubble(box);
+    // Remove in-progress bubble — use authoritative reply from done frame
+    const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble');
+    if (inProgress) inProgress.remove();
+
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
     document.getElementById('chat-input').disabled = false;
 
     const reply = frame.reply || '';
-    if (reply) {
-      appendMessage(convName, 'model', reply);
-    }
+    if (reply) appendMessage(convName, 'model', reply);
     document.getElementById('chat-input').focus();
     box.scrollTop = box.scrollHeight;
     return;
   }
 
   if (frame.type === 'error') {
-    removeThinkingBubble(box);
+    const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble');
+    if (inProgress) inProgress.remove();
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
     document.getElementById('chat-input').disabled = false;

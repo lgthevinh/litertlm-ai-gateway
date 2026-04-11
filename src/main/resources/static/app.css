@@ -423,6 +423,15 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 }
 @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .4; transform: scale(.7); } }
 
+/* Blinking cursor while tokens are streaming in */
+.streaming-bubble .msg-bubble::after {
+  content: '▋';
+  display: inline;
+  color: var(--accent);
+  animation: blink-cursor .7s step-end infinite;
+}
+@keyframes blink-cursor { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
 /* ── Markdown inside model bubbles ────────────────────────────────────── */
 .msg-bubble.markdown { white-space: normal; }
 .msg-bubble.markdown > *:first-child { margin-top: 0 !important; }

@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * ## Lifecycle
  * - [startJob]  — called when a message is submitted; creates a [ConversationJob] in BUSY state
- * - [onToken]   — called for each streamed token; appends to replyBuffer, resets watchdog
+ * - [onToken]   — called for each streamed token; appends to replyBuffer, emits to tokenFlow
  * - [onDone]    — called when inference completes; clears job, resolves deferred with reply text
  * - [onError]   — called on inference failure or watchdog timeout; clears job → IDLE
  *
@@ -64,11 +64,14 @@ object ConversationJobRegistry {
 
     /**
      * Called for each token received from inference.
-     * Appends [token] to the reply buffer and resets the watchdog timer.
+     * Appends [token] to the reply buffer, emits to [ConversationJob.tokenFlow] for any
+     * connected WS client collecting it, and resets the watchdog timer.
+     * [MutableSharedFlow.tryEmit] is non-blocking and thread-safe.
      */
     fun onToken(convName: String, token: String) {
         val job = jobs[convName] ?: return
         job.replyBuffer.append(token)
+        job.tokenFlow.tryEmit(token)
         // Reset watchdog — cancel old, start new
         job.watchdogJob?.cancel()
         job.watchdogJob = launchWatchdog(convName)
