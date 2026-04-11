@@ -32,6 +32,7 @@ class LMServiceTool : GatewayTool {
      */
     private val DOC_NAMES = listOf(
         "api-manual",
+        "conversation-architecture",
         "litertlm-sdk",
         "project-overview",
         "tool-system"

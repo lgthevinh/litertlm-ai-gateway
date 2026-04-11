@@ -424,11 +424,13 @@ function initDocsSectionNav() {
 
 // ── New conversation modal ────────────────────────────────────────────
 function openNewConvModal() {
-  document.getElementById('nc-name').value   = '';
-  document.getElementById('nc-config').value = 'assistant';
-  document.getElementById('nc-system').value = '';
+  document.getElementById('nc-name').value        = '';
+  document.getElementById('nc-config').value      = 'assistant';
+  document.getElementById('nc-system').value      = '';
   document.getElementById('nc-system-field').style.display = 'none';
-  // Uncheck all tool checkboxes
+  document.getElementById('nc-topk').value        = '';
+  document.getElementById('nc-topp').value        = '';
+  document.getElementById('nc-temperature').value = '';
   document.querySelectorAll('#nc-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
   setAlert(document.getElementById('nc-err'), null);
   document.getElementById('new-conv-modal').classList.add('open');
@@ -442,18 +444,26 @@ async function createConversation() {
   const name   = document.getElementById('nc-name').value.trim();
   const config = document.getElementById('nc-config').value;
   const system = document.getElementById('nc-system').value.trim();
+  const topK   = document.getElementById('nc-topk').value.trim();
+  const topP   = document.getElementById('nc-topp').value.trim();
+  const temp   = document.getElementById('nc-temperature').value.trim();
   const errEl  = document.getElementById('nc-err');
   setAlert(errEl, null);
 
   if (!name) { setAlert(errEl, 'Name is required.'); return; }
 
-  // Collect checked tools
   const tools = Array.from(document.querySelectorAll('#nc-tools-row input[type="checkbox"]:checked'))
     .map(cb => cb.value);
 
-  const body = config === 'custom'
-    ? { name, systemInstruction: system || undefined, tools: tools.length ? tools : undefined }
-    : { name, config, tools: tools.length ? tools : undefined };
+  const body = { name, tools: tools.length ? tools : undefined };
+  if (config === 'custom') {
+    if (system) body.systemInstruction = system;
+  } else {
+    body.config = config;
+  }
+  if (topK) body.topK        = parseInt(topK, 10);
+  if (topP) body.topP        = parseFloat(topP);
+  if (temp) body.temperature = parseFloat(temp);
 
   try {
     const res = await authApi('/conversations', 'POST', body);
