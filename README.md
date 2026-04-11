@@ -1,126 +1,159 @@
 # LiteRTLM AI Gateway
 
-LiteRTLM AI Gateway is a Kotlin/JVM HTTP gateway that wraps Google AI Edge LiteRTLM for on-device LLM inference. It exposes REST and WebSocket APIs for conversation management, user authentication, and API key management, backed by SQLite persistence and a plugin-ready architecture.
+LiteRTLM AI Gateway is a Kotlin/JVM server that runs a LiteRTLM model locally and exposes it as HTTP and WebSocket APIs. It is designed for teams who want a simple, self-hosted chat gateway with authentication, API keys, and persistent conversation history.
 
-## Key Features
+The gateway wraps Google AI Edge LiteRTLM (on-device LLM inference) and provides a thin, production-style API that you can use from a web app, a script, or another service.
 
-- REST and WebSocket endpoints for chat conversations
-- JWT-based user authentication with refresh tokens
-- API key generation and validation for programmatic clients
-- SQLite persistence for users, tokens, and API keys
-- Built-in conversation presets: assistant, coder, concise, creative
-- Configurable via `.env` with environment variable overrides
+## What this project is for
 
-## Tech Stack
+- Run an on-device LiteRTLM model behind a clean HTTP API
+- Build internal chat tools without depending on external LLM services
+- Provide authenticated access for users and programmatic clients
+- Store conversations and messages in SQLite for audit or replay
+
+## Key features
+
+- REST and WebSocket chat APIs
+- JWT login + refresh tokens
+- API key management for programmatic clients
+- Conversation presets (assistant, coder, concise, creative)
+- Tool calling (built-in datetime + calculator)
+- SQLite persistence with a local data directory
+
+## Who this is for
+
+- Developers who want an on-device LLM gateway with minimal setup
+- Product teams building internal assistants
+- Anyone experimenting with LiteRTLM and requiring a stable API layer
+
+## Tech stack
 
 - Kotlin 2.3.10, JDK 21
 - Ktor 3.4.2 (Netty)
 - Google AI Edge LiteRTLM JVM SDK 0.10.0
-- SQLite (via DaoSqlite)
+- SQLite (DaoSqlite)
 - Gson, HikariCP
 
 ## Prerequisites
 
 - JDK 21+
-- LiteRTLM model files downloaded to `model/`
-- Native LiteRTLM library for your platform
+- A LiteRTLM model file under `model/`
+- Currently supported platforms: Linux x86_64 and macOS ARM (Apple Silicon)
 
-## Setup
+## Supported models (current)
 
-1. Create environment file.
+- Model name: gemma4-e4b-it.litertlm, gemma4-e2b-it.litertlm (tested)
+- Download: [e4b](https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm), [e2b](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm)
+
+## Install and run
+
+### 1) Configure environment variables
+
+Copy the example file and update secrets:
 
 ```bash
 copy .env.example .env
 ```
 
-2. Edit `.env` and set secure values:
+Set values in `.env` (these match `.env.example`):
 
 ```
-X_API_KEY=change-me-x-api-key
 JWT_SECRET=change-me-jwt-secret
+AUTH_USERNAME=admin
+AUTH_PASSWORD=change-me-password
 ```
 
-3. Download the LiteRTLM model and place it under `model/`.
+### 2) Add a model
 
-The default lm config in `src/main/kotlin/LMApplication.kt` expects:
+The default configuration in `src/main/kotlin/LMApplication.kt` expects:
 
 ```
 model/gemma4-e4b/gemma-4-E4B-it.litertlm
 ```
 
-Model download steps:
+Download the LiteRTLM model file for your target device, then place it at that path. To use a different model or folder, update the `EngineConfig` in `src/main/kotlin/LMApplication.kt`.
 
-1) Obtain the LiteRTLM model file for Gemma 4 E4B Instruct from your distribution source (Google AI Edge LiteRTLM model package).
-2) Create the directory `model/gemma4-e4b/`.
-3) Place the `.litertlm` file at `model/gemma4-e4b/gemma-4-E4B-it.litertlm`.
+### 3) Build and run
 
-If you want to use a different model file or path, update the `EngineConfig` in `src/main/kotlin/LMApplication.kt`.
+Build a fat JAR:
 
-4. Ensure the native LiteRTLM library is available.
-
-The repository includes `jni-libs/libLiteRt_linux_x86_64.so` for Linux. For other platforms, place the correct native library where the LiteRTLM JVM SDK can load it (per your LiteRTLM installation instructions).
-
-## API Manual
-
-### 1) Health Check
-
-```
-GET /
+```bash
+./gradlew buildFatJar
 ```
 
-### 2) Login and Token Flow
+Run it:
 
-Login:
-
+```bash
+./gradlew runFatJar
 ```
+
+Or run the JAR directly:
+
+```bash
+java -jar build/libs/aigateway-1.0-all.jar
+```
+
+The server starts on `http://0.0.0.0:8080`.
+
+## How to use
+
+### 1) Log in and get a token
+
+```http
 POST /api/auth/login
 {
-  "username": "alice",
-  "password": "s3cr3t"
+  "username": "admin",
+  "password": "change-me-password"
 }
 ```
 
 Response:
 
-```
+```json
 { "ok": true, "accessToken": "...", "refreshToken": "..." }
 ```
 
-Refresh:
+### 2) Create a conversation
 
-```
-POST /api/auth/refresh
-{ "refreshToken": "..." }
-```
+```http
+POST /api/conversations
+Authorization: Bearer <accessToken|apiKey>
 
-Logout:
-
-```
-POST /api/auth/logout
-{ "refreshToken": "..." }
+{ "name": "my-chat", "config": "assistant" }
 ```
 
-Special local account:
+### 3) Send a message (blocking)
 
-- Use `username: "local"` with no password for local development (reserved virtual user).
+```http
+POST /api/conversations/my-chat/messages
+Authorization: Bearer <accessToken|apiKey>
 
-### 3) Create Users (JWT + X-Api-Key)
-
-To create a new user remotely, you must provide `X-Api-Key` that matches `X_API_KEY` in `.env`.
-
-```
-POST /api/auth/user/create
-Authorization: Bearer <accessToken>
-X-Api-Key: <X_API_KEY>
-
-{ "username": "alice", "password": "s3cr3t" }
+{ "message": "Hello" }
 ```
 
-### 4) API Key Management (JWT required)
-
-Generate a key:
+### 4) Stream responses (WebSocket)
 
 ```
+ws://localhost:8080/ws/conversations/my-chat?token=<accessToken|apiKey>
+```
+
+Client -> server:
+
+```
+{ "message": "Hello" }
+```
+
+Server -> client:
+
+```
+{ "type": "token", "token": "Hel" }
+{ "type": "token", "token": "lo" }
+{ "type": "done" }
+```
+
+### 5) Generate API keys (JWT required)
+
+```http
 POST /api/api-key/generate
 Authorization: Bearer <accessToken>
 
@@ -129,85 +162,28 @@ Authorization: Bearer <accessToken>
 
 List keys:
 
-```
+```http
 GET /api/api-key/list
 Authorization: Bearer <accessToken>
 ```
 
-Revoke key:
+Revoke a key:
 
-```
+```http
 DELETE /api/api-key/revoke
 Authorization: Bearer <accessToken>
 
 { "key": "lrtlm_..." }
 ```
 
-### 5) Conversations (JWT or API Key)
+## Application examples
 
-Create conversation:
+- Internal customer support assistant running entirely on-device
+- Local developer helper with custom tool integration
+- Gateway for embedded or edge deployments without internet access
+- Prototyping chat workflows with persistent history
 
-```
-POST /api/conversations
-Authorization: Bearer <accessToken|apiKey>
-
-{ "name": "my-chat", "config": "assistant" }
-```
-
-Send message:
-
-```
-POST /api/conversations/my-chat/messages
-Authorization: Bearer <accessToken|apiKey>
-
-{ "message": "Hello" }
-```
-
-Close conversation:
-
-```
-DELETE /api/conversations/my-chat
-Authorization: Bearer <accessToken|apiKey>
-```
-
-### 6) WebSocket Streaming
-
-Connect:
-
-```
-ws://localhost:8080/ws/conversations/my-chat?token=<accessToken|apiKey>
-```
-
-Client → Server:
-
-```
-{ "message": "Hello" }
-```
-
-Server → Client:
-
-```
-{ "type": "token", "token": "Hel" }
-{ "type": "token", "token": "lo" }
-{ "type": "done" }
-```
-
-### 7) Built-in Conversation Presets
-
-Use one of:
-
-- `assistant`
-- `coder`
-- `concise`
-- `creative`
-
-Or provide a custom system instruction:
-
-```
-{ "name": "my-chat", "systemInstruction": "You are a pirate." }
-```
-
-## Data Directory
+## Data storage
 
 On first run, the app creates a data directory named `lm_application` and stores:
 
@@ -216,13 +192,13 @@ lm_application/
 └── lm_application.db
 ```
 
-## Configuration Notes
+## Configuration notes
 
-- `.env` values can be overridden by real environment variables at runtime.
-- The default model path and backend are set in `src/main/kotlin/LMApplication.kt`.
+- Real environment variables override `.env` values.
+- Default model path and settings are set in `src/main/kotlin/LMApplication.kt`.
 
 ## Troubleshooting
 
-- `Engine not ready`: check that the model file exists at the configured path and the native LiteRTLM library is available for your platform.
-- `Invalid or expired access token`: re-login or refresh the token.
-- `X-Api-Key required for remote user creation`: ensure `X_API_KEY` is set and passed in the header.
+- `Engine not ready`: model file path is missing.
+- `Invalid or expired access token`: re-login or refresh your token.
+- `Unauthorized`: check that the `Authorization: Bearer ...` header is present and valid.
