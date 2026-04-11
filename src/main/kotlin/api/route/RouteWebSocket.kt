@@ -8,12 +8,14 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import org.thingai.app.aigateway.LMApplication
+import org.thingai.app.aigateway.api.route.dto.WsBusyFrame
 import org.thingai.app.aigateway.api.route.dto.WsDoneFrame
 import org.thingai.app.aigateway.api.route.dto.WsErrorFrame
 import org.thingai.app.aigateway.api.route.dto.WsIncomingMessage
-import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
 import org.thingai.app.aigateway.lm.LMService
-import org.thingai.app.aigateway.lm.handler.WsChunk
+import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
+import org.thingai.app.aigateway.lm.conversation.ConversationState
+import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.app.aigateway.utils.JsonUtils
 
 fun Route.conversationWebSocket() {
@@ -21,16 +23,19 @@ fun Route.conversationWebSocket() {
     // WS /ws/conversations/{name}
     //
     // Auth: ?token=<accessToken|apiKey> query parameter.
-    //   JWT:    ?token=eyJ...
-    //   ApiKey: ?token=lrtlm_...
     //
     // Protocol (text frames, JSON):
     //   Client → Server:  { "message": "Hello" }
-    //   Server → Client:  { "type": "token", "token": "Hello" }   (one per chunk)
-    //                     { "type": "done" }                       (end of turn)
+    //   Server → Client:  { "type": "busy" }                      (inference running, wait)
+    //                     { "type": "done", "reply": "..." }       (end of turn, full reply)
     //                     { "type": "error", "error": "..." }      (recoverable error)
     //
-    // The WebSocket connection stays open for the full conversation lifetime.
+    // On connect:
+    //   IDLE → normal, wait for client message
+    //   BUSY → send busy frame, block until inference completes, send done frame with full reply
+    //   DONE → send done frame with full reply immediately, clear job
+    //
+    // The connection stays open for the full conversation lifetime.
     // Send another message after receiving "done" to continue the conversation.
     webSocket("/ws/conversations/{name}") {
         val name = call.parameters["name"]?.trim().orEmpty()
@@ -55,6 +60,37 @@ fun Route.conversationWebSocket() {
             return@webSocket
         }
 
+        // ── Resume check — handle BUSY / DONE state on connect ───────────────
+        when (ConversationJobRegistry.getState(name)) {
+            ConversationState.BUSY -> {
+                // Inference is running — notify client then block until done
+                sendJson(WsBusyFrame())
+                val busyJob = ConversationJobRegistry.getBusyJob(name)
+                if (busyJob != null) {
+                    val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
+                    if (reply != null) {
+                        // Job transitioned to DONE — consume it and send the reply
+                        ConversationJobRegistry.consume(name)
+                        sendJson(WsDoneFrame(reply = reply))
+                    } else {
+                        sendError("Inference failed while waiting for result")
+                    }
+                }
+                // Fall through to message loop — conversation is now IDLE
+            }
+            ConversationState.DONE -> {
+                // Inference already finished — consume and send reply immediately
+                val reply = ConversationJobRegistry.consume(name)
+                if (reply != null) {
+                    sendJson(WsDoneFrame(reply = reply))
+                }
+                // Fall through to message loop
+            }
+            ConversationState.IDLE -> {
+                // Nothing pending — proceed normally
+            }
+        }
+
         // ── Message loop ─────────────────────────────────────────────────────
         for (frame in incoming) {
             if (frame !is Frame.Text) continue
@@ -72,12 +108,25 @@ fun Route.conversationWebSocket() {
                 continue
             }
 
-            // Stream tokens — queues if both engines are busy, waits until one is free.
+            // Launch detached inference — collect the single Busy/Error signal
             handler.sendMessage(name, message).collect { chunk ->
                 when (chunk) {
-                    is WsChunk.Token -> sendJson(WsTokenFrame(token = chunk.text))
-                    is WsChunk.Done  -> sendJson(WsDoneFrame())
-                    is WsChunk.Error -> sendError(chunk.message)
+                    is ConversationWsChunk.Busy -> {
+                        // Inference launched — notify client and block until done
+                        sendJson(WsBusyFrame())
+                        val busyJob = ConversationJobRegistry.getBusyJob(name)
+                        if (busyJob != null) {
+                            val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
+                            if (reply != null) {
+                                ConversationJobRegistry.consume(name)
+                                sendJson(WsDoneFrame(reply = reply))
+                            } else {
+                                sendError("Inference failed")
+                            }
+                        }
+                    }
+                    is ConversationWsChunk.Error -> sendError(chunk.message)
+                    else             -> { /* Token/Done not emitted in detached mode */ }
                 }
             }
         }

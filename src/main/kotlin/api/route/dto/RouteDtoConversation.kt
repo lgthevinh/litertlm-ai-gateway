@@ -67,7 +67,6 @@ data class SendMessageResponse(
  * Request body for updating an existing conversation.
  * All fields are optional — only non-null values are applied.
  *
- * @param name                   Rename the conversation.
  * @param systemInstruction      New custom system prompt.
  * @param clearSystemInstruction Set true to remove the custom system instruction and revert to a preset.
  * @param config                 Builtin preset: "assistant"|"coder"|"concise"|"creative".
@@ -78,7 +77,6 @@ data class SendMessageResponse(
  * @param tools                  New tool list. Pass empty list `[]` to clear all tools.
  */
 data class UpdateConversationRequest(
-    val name: String?,
     val systemInstruction: String?,
     val clearSystemInstruction: Boolean?,
     val config: String?,
@@ -92,6 +90,14 @@ data class UpdateConversationResponse(
     val ok: Boolean,
     val name: String,
     val config: String
+)
+
+// ── GET /conversations/{name}/state ──────────────────────────────────────────
+
+data class ConversationStateResponse(
+    val ok: Boolean,
+    val name: String,
+    val state: String   // "IDLE" | "BUSY" | "DONE"
 )
 
 data class ToolParamDto(

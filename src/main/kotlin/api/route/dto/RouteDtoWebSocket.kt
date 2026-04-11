@@ -3,37 +3,34 @@ package org.thingai.app.aigateway.api.route.dto
 // ── WebSocket conversation frames ─────────────────────────────────────────────
 //
 // Client  →  Server:  WsIncomingMessage
-// Server  →  Client:  WsTokenFrame | WsDoneFrame | WsErrorFrame
+// Server  →  Client:  WsBusyFrame | WsDoneFrame | WsErrorFrame
 
 /**
  * Frame sent by the client to submit a message.
- * @param message The user's text input.
  */
 data class WsIncomingMessage(
     val message: String?
 )
 
 /**
- * Streamed token frame sent by the server during inference.
- * Multiple frames are sent per turn, one per partial token.
- * @param token Partial text chunk from the model.
+ * Sent when the conversation is BUSY (inference running detached).
+ * The client should display a "thinking" indicator and wait for [WsDoneFrame].
  */
-data class WsTokenFrame(
-    val type: String = "token",
-    val token: String
+data class WsBusyFrame(
+    val type: String = "busy"
 )
 
 /**
- * Sent once per turn when the model finishes generating.
+ * Sent once per turn when inference completes, carrying the full reply.
+ * Replaces the old token-streaming approach — the reply is delivered in one frame.
  */
 data class WsDoneFrame(
-    val type: String = "done"
+    val type: String = "done",
+    val reply: String = ""
 )
 
 /**
- * Sent when an error occurs (conversation not found, inference failed, auth rejected, etc.).
- * The connection remains open — the client may retry.
- * @param error Human-readable error description.
+ * Sent when an error occurs. The connection remains open — the client may retry.
  */
 data class WsErrorFrame(
     val type: String = "error",

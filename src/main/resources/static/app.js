@@ -287,9 +287,12 @@ function connectWs(name) {
     // Only activate input if this socket is still the active one for this conversation
     if (state.ws === ws && state.activeConv === name) {
       setWsStatus('connected');
-      document.getElementById('send-btn').disabled   = false;
-      document.getElementById('chat-input').disabled = false;
-      document.getElementById('chat-input').focus();
+      // Don't enable input yet if a job is BUSY — the server will send busy/done frames
+      if (!state.streaming) {
+        document.getElementById('send-btn').disabled   = false;
+        document.getElementById('chat-input').disabled = false;
+        document.getElementById('chat-input').focus();
+      }
     }
   };
 
@@ -317,39 +320,31 @@ function connectWs(name) {
 function handleWsFrame(convName, frame) {
   const box = document.getElementById('chat-box');
 
-  if (frame.type === 'token') {
-    let streamingBubble = box.querySelector('.msg-bubble.streaming');
-    if (!streamingBubble) {
-      const empty = box.querySelector('.chat-empty');
-      if (empty) empty.remove();
-      const wrapper = document.createElement('div');
-      wrapper.className = 'msg model';
-      wrapper.innerHTML = '<div class="msg-label">Model</div><div class="msg-bubble streaming"></div>';
-      box.appendChild(wrapper);
-      streamingBubble = wrapper.querySelector('.msg-bubble');
-    }
-    streamingBubble.textContent += frame.token;
-    box.scrollTop = box.scrollHeight;
+  if (frame.type === 'busy') {
+    // Inference running detached — show thinking indicator
     state.streaming = true;
+    document.getElementById('send-btn').disabled   = true;
+    document.getElementById('chat-input').disabled = true;
+    showThinkingBubble(box);
+    return;
   }
 
   if (frame.type === 'done') {
-    const streamingBubble = box.querySelector('.msg-bubble.streaming');
-    if (streamingBubble) {
-      const rawText = streamingBubble.textContent;
-      streamingBubble.classList.remove('streaming');
-      streamingBubble.classList.add('markdown');
-      streamingBubble.innerHTML = renderMarkdown(rawText);
-      appendMessage(convName, 'model', rawText);
-      box.scrollTop = box.scrollHeight;
-    }
+    removeThinkingBubble(box);
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
     document.getElementById('chat-input').disabled = false;
+
+    const reply = frame.reply || '';
+    if (reply) {
+      appendMessage(convName, 'model', reply);
+    }
     document.getElementById('chat-input').focus();
+    box.scrollTop = box.scrollHeight;
   }
 
   if (frame.type === 'error') {
+    removeThinkingBubble(box);
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
     document.getElementById('chat-input').disabled = false;
@@ -388,7 +383,22 @@ function sendMessage() {
   state.ws.send(JSON.stringify({ message: text }));
 }
 
-// ── Docs section nav ─────────────────────────────────────────────────
+// ── Thinking bubble helpers ───────────────────────────────────────────
+function showThinkingBubble(box) {
+  if (box.querySelector('.thinking-bubble')) return;
+  const empty = box.querySelector('.chat-empty');
+  if (empty) empty.remove();
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg model thinking-bubble';
+  wrapper.innerHTML = '<div class="msg-label">Model</div><div class="msg-bubble thinking">Thinking\u2026</div>';
+  box.appendChild(wrapper);
+  box.scrollTop = box.scrollHeight;
+}
+
+function removeThinkingBubble(box) {
+  const bubble = box.querySelector('.thinking-bubble');
+  if (bubble) bubble.remove();
+}
 /**
  * Wires the in-page anchor links in the docs section so they scroll the
  * <main> element (not window) to the target card.
@@ -477,8 +487,7 @@ async function deleteConv(evt, name) {
 function openEditConvModal(evt, name) {
   evt.stopPropagation();
   state.editTarget = name;
-  document.getElementById('ec-name').value   = name;
-  document.getElementById('ec-config').value = 'assistant';
+  document.getElementById('ec-config').value = '';
   document.getElementById('ec-system').value = '';
   document.getElementById('ec-system-field').style.display = 'none';
   document.getElementById('ec-topk').value        = '';
@@ -486,9 +495,7 @@ function openEditConvModal(evt, name) {
   document.getElementById('ec-temperature').value = '';
   document.querySelectorAll('#ec-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
   setAlert(document.getElementById('ec-err'), null);
-  document.getElementById('ec-config').value = '';   // blank = no change
   document.getElementById('edit-conv-modal').classList.add('open');
-  setTimeout(() => document.getElementById('ec-name').focus(), 50);
 }
 function closeEditConvModal() {
   document.getElementById('edit-conv-modal').classList.remove('open');
@@ -499,25 +506,22 @@ async function saveEditConv() {
   const errEl = document.getElementById('ec-err');
   setAlert(errEl, null);
 
-  const originalName = state.editTarget;
-  if (!originalName) return;
+  const name = state.editTarget;
+  if (!name) return;
 
-  const newName     = document.getElementById('ec-name').value.trim();
-  const configVal   = document.getElementById('ec-config').value;
-  const systemVal   = document.getElementById('ec-system').value.trim();
-  const topKVal     = document.getElementById('ec-topk').value.trim();
-  const topPVal     = document.getElementById('ec-topp').value.trim();
-  const tempVal     = document.getElementById('ec-temperature').value.trim();
+  const configVal = document.getElementById('ec-config').value;
+  const systemVal = document.getElementById('ec-system').value.trim();
+  const topKVal   = document.getElementById('ec-topk').value.trim();
+  const topPVal   = document.getElementById('ec-topp').value.trim();
+  const tempVal   = document.getElementById('ec-temperature').value.trim();
 
   const checkedTools = Array.from(document.querySelectorAll('#ec-tools-row input[type="checkbox"]'));
-  // Only send tools if at least one checkbox was interacted with (indeterminate = no change)
   const toolsChanged = checkedTools.some(cb => !cb.indeterminate);
   const tools = toolsChanged
     ? checkedTools.filter(cb => cb.checked).map(cb => cb.value)
     : undefined;
 
   const body = {};
-  if (newName && newName !== originalName) body.name = newName;
   if (configVal === 'custom') {
     if (systemVal) body.systemInstruction = systemVal;
   } else if (configVal === '_clear') {
@@ -525,9 +529,9 @@ async function saveEditConv() {
   } else if (configVal) {
     body.config = configVal;
   }
-  if (topKVal)   body.topK        = parseInt(topKVal, 10);
-  if (topPVal)   body.topP        = parseFloat(topPVal);
-  if (tempVal)   body.temperature = parseFloat(tempVal);
+  if (topKVal) body.topK        = parseInt(topKVal, 10);
+  if (topPVal) body.topP        = parseFloat(topPVal);
+  if (tempVal) body.temperature = parseFloat(tempVal);
   if (tools !== undefined) body.tools = tools;
 
   if (!Object.keys(body).length) {
@@ -536,25 +540,11 @@ async function saveEditConv() {
   }
 
   try {
-    const res = await authApi('/conversations/' + encodeURIComponent(originalName), 'PATCH', body);
+    const res = await authApi('/conversations/' + encodeURIComponent(name), 'PATCH', body);
     if (!res.ok) { setAlert(errEl, res.error || 'Update failed.'); return; }
-
-    const effectiveName = res.name || newName || originalName;
-
-    // Update in-memory state if active conversation was renamed
-    if (state.activeConv === originalName && effectiveName !== originalName) {
-      state.messages[effectiveName] = state.messages[originalName];
-      delete state.messages[originalName];
-      state.activeConv = effectiveName;
-      document.getElementById('conv-title').textContent = effectiveName;
-      wsDisconnect();
-    }
-
     closeEditConvModal();
     await loadConversations();
-
-    // Reconnect WS if the active conversation was updated
-    if (state.activeConv === effectiveName) connectWs(effectiveName);
+    if (state.activeConv === name) connectWs(name);
   } catch (e) { setAlert(errEl, e.message); }
 }
 

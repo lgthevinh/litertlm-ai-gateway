@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.base.log.ILog
 
 /**
@@ -19,14 +20,14 @@ import org.thingai.base.log.ILog
  * @param config   The fully-built [com.google.ai.edge.litertlm.ConversationConfig]
  *                 including system instruction, sampler, and initial messages (history).
  * @param message  The new user message to send.
- * @param reply    Channel used to stream [WsChunk] frames back to the caller.
- *                 The worker sends tokens, then [WsChunk.Done] or [WsChunk.Error],
+ * @param reply    Channel used to stream [ConversationWsChunk] frames back to the caller.
+ *                 The worker sends tokens, then [ConversationWsChunk.Done] or [ConversationWsChunk.Error],
  *                 then closes the channel.
  */
 data class ConversationTask(
     val config: ConversationConfig,
     val message: String,
-    val reply: Channel<WsChunk> = Channel(Channel.UNLIMITED)
+    val reply: Channel<ConversationWsChunk> = Channel(Channel.UNLIMITED)
 )
 
 /**
@@ -36,7 +37,7 @@ data class ConversationTask(
  * - [ENGINE_COUNT] engines are initialised on [start].
  * - A single unbounded [taskChannel] accepts [ConversationTask] submissions from any caller.
  * - One coroutine worker per engine loops on the queue — picks a task, runs inference,
- *   streams [WsChunk] frames back through [ConversationTask.reply], then picks the next task.
+ *   streams [ConversationWsChunk] frames back through [ConversationTask.reply], then picks the next task.
  * - No engine is shared between workers — each worker owns its engine exclusively,
  *   so no locking is needed during inference.
  * - If all engines are busy, callers queue and wait naturally (backpressure via Channel).
@@ -103,21 +104,21 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     // ── Submission ────────────────────────────────────────────────────────────
 
     /**
-     * Submits a [ConversationTask] to the queue and returns a [Flow] of [WsChunk] frames.
+     * Submits a [ConversationTask] to the queue and returns a [Flow] of [ConversationWsChunk] frames.
      *
      * The flow suspends until a worker picks up the task, then emits tokens as they arrive.
-     * Completes when [WsChunk.Done] is received or an error occurs.
+     * Completes when [ConversationWsChunk.Done] is received or an error occurs.
      *
      * Callers collect this flow to receive the streaming reply — both REST (collect all,
      * return final string) and WebSocket (emit each frame) routes use this same path.
      */
-    fun submit(task: ConversationTask): Flow<WsChunk> = flow {
+    fun submit(task: ConversationTask): Flow<ConversationWsChunk> = flow {
         taskChannel.send(task)
         ILog.d(TAG, "submit: task queued")
 
         for (chunk in task.reply) {
             emit(chunk)
-            if (chunk is WsChunk.Done || chunk is WsChunk.Error) break
+            if (chunk is ConversationWsChunk.Done || chunk is ConversationWsChunk.Error) break
         }
     }
 
@@ -144,7 +145,7 @@ class EngineHandler(private val engineConfig: EngineConfig) {
      * Runs a single [ConversationTask] on [engine]:
      * 1. Creates a native Conversation with [ConversationTask.config]
      * 2. Streams tokens from [sendMessageAsync] into [ConversationTask.reply]
-     * 3. Sends [WsChunk.Done] on completion or [WsChunk.Error] on failure
+     * 3. Sends [ConversationWsChunk.Done] on completion or [ConversationWsChunk.Error] on failure
      * 4. Closes the native Conversation to release engine resources
      */
     private suspend fun processTask(index: Int, engine: Engine, task: ConversationTask) {
@@ -156,20 +157,20 @@ class EngineHandler(private val engineConfig: EngineConfig) {
             conversation.sendMessageAsync(task.message)
                 .catch { e ->
                     ILog.e(TAG, "worker #$index: inference error: ${e.message}")
-                    task.reply.send(WsChunk.Error(e.message ?: "Inference failed"))
+                    task.reply.send(ConversationWsChunk.Error(e.message ?: "Inference failed"))
                     inferenceError = true
                 }
                 .collect { message ->
-                    task.reply.send(WsChunk.Token(message.toString()))
+                    task.reply.send(ConversationWsChunk.Token(message.toString()))
                 }
 
             if (!inferenceError) {
-                task.reply.send(WsChunk.Done)
+                task.reply.send(ConversationWsChunk.Done)
                 ILog.d(TAG, "worker #$index: task complete")
             }
         } catch (e: Exception) {
             ILog.e(TAG, "worker #$index: task failed: ${e.message}")
-            runCatching { task.reply.send(WsChunk.Error(e.message ?: "Unknown error")) }
+            runCatching { task.reply.send(ConversationWsChunk.Error(e.message ?: "Unknown error")) }
         } finally {
             runCatching { conversation?.close() }
             task.reply.close()

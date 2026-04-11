@@ -86,14 +86,10 @@ class MessageHandler(private val dao: DaoSqlite) {
      * Only non-null parameters overwrite the stored value — null means "leave unchanged".
      * [configLabel] is automatically set to "custom" when [systemInstruction] is provided.
      *
-     * If [newName] is provided and differs from [name], the old record and all its messages
-     * are deleted and re-inserted under the new name (rename via copy).
-     *
-     * @return `false` if the conversation does not exist, the new name is already taken, or a DB error occurs.
+     * @return `false` if the conversation does not exist or a DB error occurs.
      */
     fun updateConversation(
         name: String,
-        newName: String? = null,
         systemInstruction: String? = null,
         clearSystemInstruction: Boolean = false,
         configLabel: String? = null,
@@ -125,51 +121,17 @@ class MessageHandler(private val dao: DaoSqlite) {
             else -> record.tools
         }
 
-        val targetName = newName?.trim()?.takeIf { it.isNotBlank() } ?: name
-
         return try {
-            if (targetName != name) {
-                // Name change — check target name is not already taken
-                if (getConversation(targetName) != null) {
-                    ILog.d(TAG, "updateConversation: rename target '$targetName' already exists")
-                    return false
-                }
-
-                // Re-insert conversation under new name
-                val renamed = record.copy(
-                    name              = targetName,
-                    systemInstruction = resolvedInstruction,
-                    configLabel       = resolvedConfigLabel,
-                    topK              = topK ?: record.topK,
-                    topP              = topP ?: record.topP,
-                    temperature       = temperature ?: record.temperature,
-                    tools             = resolvedTools
-                )
-                dao.insert(renamed)
-
-                // Migrate messages to new name
-                val messages = dao.query(LMStoredMessage::class.java, "conversationName", name)
-                messages.forEach { msg ->
-                    dao.insert(msg.copy(conversationName = targetName))
-                    dao.delete(msg)
-                }
-
-                // Delete old conversation record
-                dao.delete(record)
-                ILog.i(TAG, "updateConversation: '$name' renamed to '$targetName', ${messages.size} message(s) migrated")
-            } else {
-                // In-place update
-                val updated = record.copy(
-                    systemInstruction = resolvedInstruction,
-                    configLabel       = resolvedConfigLabel,
-                    topK              = topK ?: record.topK,
-                    topP              = topP ?: record.topP,
-                    temperature       = temperature ?: record.temperature,
-                    tools             = resolvedTools
-                )
-                dao.insertOrUpdate(updated)
-                ILog.i(TAG, "updateConversation: '$name' updated")
-            }
+            val updated = record.copy(
+                systemInstruction = resolvedInstruction,
+                configLabel       = resolvedConfigLabel,
+                topK              = topK ?: record.topK,
+                topP              = topP ?: record.topP,
+                temperature       = temperature ?: record.temperature,
+                tools             = resolvedTools
+            )
+            dao.insertOrUpdate(updated)
+            ILog.i(TAG, "updateConversation: '$name' updated")
             true
         } catch (e: DaoException) {
             ILog.e(TAG, "updateConversation: DB error: ${e.message}")
