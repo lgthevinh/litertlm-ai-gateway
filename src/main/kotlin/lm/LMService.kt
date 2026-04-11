@@ -4,6 +4,7 @@ import com.google.ai.edge.litertlm.EngineConfig
 import org.thingai.app.aigateway.lm.handler.ConversationHandler
 import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
+import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
 import org.thingai.app.aigateway.lm.tool.builtin.CalculatorTool
 import org.thingai.app.aigateway.lm.tool.builtin.DateTimeTool
@@ -92,6 +93,7 @@ object LMService {
         engineHandler       = null
         conversationHandler = null
         ToolRegistry.clear()
+        ConversationJobRegistry.clear()
         ILog.i(TAG, "stop: engines stopped")
     }
 

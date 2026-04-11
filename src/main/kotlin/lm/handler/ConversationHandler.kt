@@ -1,7 +1,13 @@
 package org.thingai.app.aigateway.lm.handler
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
+import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
+import org.thingai.app.aigateway.lm.conversation.ConversationState
+import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.app.aigateway.lm.entity.LMStoredConversation
 import org.thingai.app.aigateway.lm.entity.LMStoredMessage
 import org.thingai.base.log.ILog
@@ -17,6 +23,9 @@ import org.thingai.base.log.ILog
  *
  * Does NOT hold any native Conversation objects — all native state is transient
  * inside [EngineHandler.processTask].
+ *
+ * Inference is launched as a detached coroutine — it runs to completion regardless
+ * of whether the WS client stays connected. [ConversationJobRegistry] tracks job state.
  */
 class ConversationHandler(
     private val messageHandler: MessageHandler,
@@ -26,6 +35,9 @@ class ConversationHandler(
     companion object {
         private const val TAG = "ConversationHandler"
     }
+
+    /** Scope for detached inference coroutines — outlive any individual WS connection. */
+    private val inferenceScope = CoroutineScope(Dispatchers.Default)
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -77,8 +89,7 @@ class ConversationHandler(
      * Pass [clearSystemInstruction] = true to remove a custom system instruction
      * and revert to a builtin preset.
      *
-     * @param name                   Current conversation name (lookup key).
-     * @param newName                Rename the conversation. All message history is migrated.
+     * @param name                   Conversation name (lookup key).
      * @param systemInstruction      New custom system prompt.
      * @param clearSystemInstruction Set true to remove the custom system instruction.
      * @param configLabel            Builtin preset: "assistant"|"coder"|"concise"|"creative".
@@ -88,11 +99,10 @@ class ConversationHandler(
      * @param topP                   Sampler top-P.
      * @param temperature            Sampler temperature.
      * @param tools                  New tool list. Pass empty list to clear all tools.
-     * @return `false` if [name] does not exist, [newName] is already taken, or a DB error occurs.
+     * @return `false` if [name] does not exist or a DB error occurs.
      */
     fun updateConversation(
         name: String,
-        newName: String? = null,
         systemInstruction: String? = null,
         clearSystemInstruction: Boolean = false,
         configLabel: String? = null,
@@ -103,7 +113,6 @@ class ConversationHandler(
     ): Boolean {
         return messageHandler.updateConversation(
             name                   = name,
-            newName                = newName,
             systemInstruction      = systemInstruction,
             clearSystemInstruction = clearSystemInstruction,
             configLabel            = configLabel,
@@ -112,10 +121,7 @@ class ConversationHandler(
             temperature            = temperature,
             tools                  = tools
         ).also { updated ->
-            if (updated) {
-                val effectiveName = newName?.trim()?.takeIf { it.isNotBlank() } ?: name
-                ILog.i(TAG, "updateConversation: '$name' → '$effectiveName' updated")
-            }
+            if (updated) ILog.i(TAG, "updateConversation: '$name' updated")
         }
     }
 
@@ -146,59 +152,74 @@ class ConversationHandler(
     // ── Inference ─────────────────────────────────────────────────────────────
 
     /**
-     * Sends [message] to the conversation identified by [name] and streams the reply.
-     *
-     * Flow:
-     * 1. Load stored config from DB — emits [WsChunk.Error] if not found
-     * 2. Build [ConversationConfig] with truncated history as initialMessages
-     * 3. Submit [ConversationTask] to [EngineHandler] — queues if both engines are busy
-     * 4. Emit each [WsChunk.Token] to the caller as tokens arrive
-     * 5. On [WsChunk.Done] — persist user + model messages to DB, then emit Done
-     * 6. On [WsChunk.Error] — emit Error without persisting (incomplete reply)
-     *
-     * The flow runs on whatever dispatcher the caller collects on.
-     * Native Conversation creation and inference run inside [EngineHandler] on [Dispatchers.Default].
+     * Returns the current [ConversationState] for [name].
      */
-    fun sendMessage(name: String, message: String): Flow<WsChunk> = flow {
-        // 1. Load and validate conversation
+    fun getConversationState(name: String): ConversationState =
+        ConversationJobRegistry.getState(name)
+
+    /**
+     * Submits [message] to the conversation identified by [name].
+     *
+     * Inference is launched in a **detached coroutine** ([inferenceScope]) that runs to
+     * completion regardless of whether the caller's flow is still being collected.
+     *
+     * Flow behaviour:
+     * - If conversation not found → emits [ConversationWsChunk.Error]
+     * - If conversation is BUSY  → emits [ConversationWsChunk.Error] ("conversation is busy")
+     * - Otherwise                → starts a BUSY job, launches inference, emits [ConversationWsChunk.Busy]
+     *                              so the WS handler knows to await [ConversationJobRegistry]
+     *
+     * Persistence: user + model messages are written to DB inside the detached coroutine
+     * on [ConversationWsChunk.Done], before the job transitions to DONE.
+     */
+    fun sendMessage(name: String, message: String): Flow<ConversationWsChunk> = flow {
+        // 1. Guard — conversation must exist
         val config = messageHandler.buildConfig(name)
         if (config == null) {
-            emit(WsChunk.Error("Conversation '$name' not found"))
+            emit(ConversationWsChunk.Error("Conversation '$name' not found"))
             return@flow
         }
 
-        // 2. Submit task to engine queue
-        val task = ConversationTask(config = config, message = message)
-        val replyBuffer = StringBuilder()
-        var hasError = false
+        // 2. Guard — reject if already BUSY
+        if (ConversationJobRegistry.isBusy(name)) {
+            emit(ConversationWsChunk.Error("Conversation '$name' is busy — please wait for the current reply to complete"))
+            return@flow
+        }
 
-        engineHandler.submit(task).collect { chunk ->
-            when (chunk) {
-                is WsChunk.Token -> {
-                    replyBuffer.append(chunk.text)
-                    emit(chunk)
-                }
-                is WsChunk.Done -> {
-                    // 3. Persist both turns before signalling done
-                    val seq = messageHandler.nextSeq(name)
-                    messageHandler.appendMessages(
-                        conversationName = name,
-                        userText         = message,
-                        modelText        = replyBuffer.toString(),
-                        seq              = seq
-                    )
-                    emit(WsChunk.Done)
-                }
-                is WsChunk.Error -> {
-                    hasError = true
-                    ILog.e(TAG, "sendMessage: inference error for '$name': ${chunk.message}")
-                    emit(chunk)
+        // 3. Register job — IDLE → BUSY
+        val job = ConversationJobRegistry.startJob(name)
+
+        // 4. Launch detached inference — survives WS disconnect
+        inferenceScope.launch {
+            val task = ConversationTask(config = config, message = message)
+
+            engineHandler.submit(task).collect { chunk ->
+                when (chunk) {
+                    is ConversationWsChunk.Token -> {
+                        ConversationJobRegistry.onToken(name, chunk.text)
+                    }
+                    is ConversationWsChunk.Done -> {
+                        // Persist before transitioning to DONE
+                        val seq = messageHandler.nextSeq(name)
+                        messageHandler.appendMessages(
+                            conversationName = name,
+                            userText         = message,
+                            modelText        = job.replyBuffer.toString(),
+                            seq              = seq
+                        )
+                        ConversationJobRegistry.onDone(name)
+                        ILog.d(TAG, "sendMessage: '$name' complete, reply=${job.replyBuffer.length} chars")
+                    }
+                    is ConversationWsChunk.Error -> {
+                        ILog.e(TAG, "sendMessage: inference error for '$name': ${chunk.message}")
+                        ConversationJobRegistry.onError(name, chunk.message)
+                    }
+                    else -> Unit
                 }
             }
         }
 
-        if (!hasError) {
-            ILog.d(TAG, "sendMessage: '$name' turn complete, reply=${replyBuffer.length} chars")
-        }
+        // 5. Signal WS handler to await the job
+        emit(ConversationWsChunk.Busy)
     }
 }

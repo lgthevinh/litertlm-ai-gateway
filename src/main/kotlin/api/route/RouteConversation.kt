@@ -10,6 +10,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import org.thingai.app.aigateway.api.plugin.DualAuthPlugin
 import org.thingai.app.aigateway.api.route.dto.ApiErrorResponse
+import org.thingai.app.aigateway.api.route.dto.ConversationStateResponse
 import org.thingai.app.aigateway.api.route.dto.CreateConversationRequest
 import org.thingai.app.aigateway.api.route.dto.CreateConversationResponse
 import org.thingai.app.aigateway.api.route.dto.GetMessagesResponse
@@ -22,7 +23,8 @@ import org.thingai.app.aigateway.api.route.dto.UpdateConversationRequest
 import org.thingai.app.aigateway.api.route.dto.UpdateConversationResponse
 import org.thingai.app.aigateway.api.route.extension.respondJson
 import org.thingai.app.aigateway.lm.LMService
-import org.thingai.app.aigateway.lm.handler.WsChunk
+import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
+import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.app.aigateway.utils.JsonUtils
 import kotlin.collections.map
 
@@ -126,6 +128,30 @@ fun Route.conversation() {
             call.respondJson(JsonUtils.toJson(GetMessagesResponse(ok = true, messages = messages)))
         }
 
+        // GET /api/conversations/{name}/state
+        // Response 200: { "ok": true, "name": "my-chat", "state": "IDLE"|"BUSY"|"DONE" }
+        get("/{name}/state") {
+            val handler = LMService.conversationHandler
+            if (handler == null) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Engine not ready")), HttpStatusCode.ServiceUnavailable)
+                return@get
+            }
+
+            val name = call.parameters["name"]?.trim().orEmpty()
+            if (name.isBlank()) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Missing conversation name")), HttpStatusCode.BadRequest)
+                return@get
+            }
+
+            if (!handler.hasConversation(name)) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Conversation '$name' not found")), HttpStatusCode.NotFound)
+                return@get
+            }
+
+            val state = handler.getConversationState(name).name  // "IDLE", "BUSY", "DONE"
+            call.respondJson(JsonUtils.toJson(ConversationStateResponse(ok = true, name = name, state = state)))
+        }
+
         // POST /api/conversations/{name}/messages
         // Body: { "message": "Hello, how are you?" }
         // Response 200: { "ok": true, "reply": "I'm doing well..." }
@@ -155,34 +181,42 @@ fun Route.conversation() {
                 return@post
             }
 
-            // Collect the full streaming reply into a single string
-            val replyBuffer = StringBuilder()
+            // Launch detached inference and await completion
             var errorMessage: String? = null
+            var reply: String? = null
 
             handler.sendMessage(name, message).collect { chunk ->
                 when (chunk) {
-                    is WsChunk.Token -> replyBuffer.append(chunk.text)
-                    is WsChunk.Error -> errorMessage = chunk.message
-                    is WsChunk.Done  -> Unit
+                    is ConversationWsChunk.Busy  -> {
+                        val busyJob = ConversationJobRegistry.getBusyJob(name)
+                        if (busyJob != null) {
+                            reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
+                            if (reply != null) ConversationJobRegistry.consume(name)
+                            else errorMessage = "Inference failed"
+                        } else {
+                            reply = ConversationJobRegistry.consume(name)
+                        }
+                    }
+                    is ConversationWsChunk.Error -> errorMessage = chunk.message
+                    else                         -> Unit
                 }
             }
 
             if (errorMessage != null) {
-                val status = if (errorMessage.contains("not found", ignoreCase = true))
+                val status = if (errorMessage!!.contains("not found", ignoreCase = true))
                     HttpStatusCode.NotFound else HttpStatusCode.InternalServerError
-                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, errorMessage)), status)
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, errorMessage!!)), status)
                 return@post
             }
 
-            call.respondJson(JsonUtils.toJson(SendMessageResponse(ok = true, reply = replyBuffer.toString())))
+            call.respondJson(JsonUtils.toJson(SendMessageResponse(ok = true, reply = reply ?: "")))
         }
 
         // PATCH /api/conversations/{name}
-        // Body: any subset of { "name", "systemInstruction", "clearSystemInstruction",
+        // Body: any subset of { "systemInstruction", "clearSystemInstruction",
         //                        "config", "topK", "topP", "temperature", "tools" }
-        // Response 200: { "ok": true, "name": "<effectiveName>", "config": "<configLabel>" }
+        // Response 200: { "ok": true, "name": "<name>", "config": "<configLabel>" }
         // Response 404: conversation not found
-        // Response 409: new name already taken
         patch("/{name}") {
             val handler = LMService.conversationHandler
             if (handler == null) {
@@ -208,11 +242,6 @@ fun Route.conversation() {
                 return@patch
             }
 
-            // Resolve new name and effective config label for the response
-            val newName = req.name?.trim()?.takeIf { it.isNotBlank() }
-            val effectiveName = newName ?: name
-
-            // Check existence before attempting update to give a meaningful 404
             if (!handler.hasConversation(name)) {
                 call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Conversation '$name' not found")), HttpStatusCode.NotFound)
                 return@patch
@@ -222,7 +251,6 @@ fun Route.conversation() {
 
             val updated = handler.updateConversation(
                 name                   = name,
-                newName                = newName,
                 systemInstruction      = req.systemInstruction?.trim()?.takeIf { it.isNotBlank() },
                 clearSystemInstruction = req.clearSystemInstruction ?: false,
                 configLabel            = req.config?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
@@ -233,16 +261,13 @@ fun Route.conversation() {
             )
 
             if (!updated) {
-                // Most likely cause at this point is a name conflict
-                val error = if (newName != null) "Conversation '$newName' already exists"
-                            else "Failed to update conversation '$name'"
-                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, error)), HttpStatusCode.Conflict)
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Failed to update conversation '$name'")), HttpStatusCode.InternalServerError)
                 return@patch
             }
 
             call.respondJson(JsonUtils.toJson(UpdateConversationResponse(
                 ok     = true,
-                name   = effectiveName,
+                name   = name,
                 config = if (req.systemInstruction != null) "custom"
                          else if (req.clearSystemInstruction == true) req.config ?: "assistant"
                          else req.config ?: "updated"
