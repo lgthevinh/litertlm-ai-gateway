@@ -127,25 +127,27 @@ The engine re-opens a fresh `Conversation` with this config on every turn. This 
 
 ## ConversationJobRegistry
 
-The registry tracks one `ConversationJob` per conversation that has an active or recently completed inference turn.
+The registry tracks one `ConversationJob` per conversation that has an active inference turn.
 
 ### ConversationState
 
 ```
 IDLE  — not in registry (default)
 BUSY  — inference running; reply accumulating in replyBuffer
-DONE  — inference complete; reply persisted to DB; eviction timer running
 ```
+
+There is no DONE state. The job is removed from the registry immediately inside `onDone()`
+before the deferred is resolved. Any awaiting handler receives the reply directly from
+`deferred.await()` — no separate consume step needed.
 
 ### ConversationJob fields
 
 ```kotlin
 data class ConversationJob(
     val convName: String,
-    val replyBuffer: StringBuilder,         // accumulates tokens during BUSY
-    val completionDeferred: CompletableDeferred<String>,  // resolved on DONE
-    var watchdogJob: Job?,                  // cancelled/reset on each token
-    var evictionJob: Job?,                  // started on DONE transition
+    val replyBuffer: StringBuilder,          // accumulates tokens during BUSY
+    val completionDeferred: CompletableDeferred<String>,  // resolved with reply on completion
+    var watchdogJob: Job?,                   // cancelled/reset on each token
     var state: ConversationState,
 )
 ```
@@ -155,10 +157,8 @@ data class ConversationJob(
 ```
 startJob(name)          IDLE → BUSY    creates job, starts 300s watchdog
 onToken(name, token)    BUSY           appends to replyBuffer, resets watchdog
-onDone(name)            BUSY → DONE    resolves deferred, persists to DB,
-                                        starts 60s eviction timer
-onError(name, reason)   BUSY → IDLE    completes deferred exceptionally, clears job
-consume(name)           DONE → IDLE    returns reply, cancels eviction, clears job
+onDone(name)            BUSY → IDLE    removes job from registry, resolves deferred with reply
+onError(name, reason)   BUSY → IDLE    removes job from registry, completes deferred exceptionally
 ```
 
 ### Timers
@@ -166,9 +166,9 @@ consume(name)           DONE → IDLE    returns reply, cancels eviction, clears
 | Timer | Duration | Starts | Resets | Action on fire |
 |-------|----------|--------|--------|----------------|
 | Watchdog | 300 s | `startJob` | Every `onToken` | `onError` — kills hung inference |
-| Eviction TTL | 60 s | `onDone` | — | Silently removes DONE job from registry |
 
-The eviction TTL only applies after the reply is already persisted to DB. If no client connects within 60 s to `consume()` the job, the in-memory entry is dropped. The DB record remains — a reconnecting client loads history via the messages endpoint.
+A reconnecting client after inference has already completed finds no job in the registry
+(IDLE) and loads history directly from DB via the messages endpoint.
 
 ---
 
@@ -186,7 +186,7 @@ Client ──WS message──► RouteWebSocket
                             ├─ launch detached coroutine
                             │       └─ EngineHandler.submit(task).collect { ... }
                             │              onToken() → replyBuffer
-                            │              onDone()  → persist DB → DONE → eviction timer
+                            │              onDone()  → persist DB → remove job → resolve deferred
                             └─ emit ConversationWsChunk.Busy
                             │
                             ▼
@@ -197,10 +197,9 @@ Client ──WS message──► RouteWebSocket
                                     inference completes
                                                 │
                                                 ▼
-                                       deferred resolved with reply
+                                       deferred resolved with reply text
                                                 │
                                                 ▼
-                                       consume(name)           → IDLE
                                        send { "type": "done", "reply": "..." }
 ```
 
@@ -214,16 +213,17 @@ Client disconnects     WS coroutine cancelled
                             ▼
                        inference completes
                             ├─ persist to DB
-                            └─ DONE (eviction timer starts)
+                            └─ job removed from registry → IDLE
+                               (deferred resolved, but no one is awaiting it)
 
 Client reconnects ──► RouteWebSocket
                             │
                             ▼
-                       ConversationJobRegistry.getState(name) = DONE
+                       ConversationJobRegistry.isBusy(name) = false  (job already gone)
                             │
                             ▼
-                       consume(name)           → IDLE, eviction cancelled
-                       send { "type": "done", "reply": "..." } immediately
+                       Falls through to message loop
+                       Client reads history via GET /api/conversations/{name}/messages
 ```
 
 ### Flow 3: Client reconnects while inference still running
@@ -232,14 +232,14 @@ Client reconnects ──► RouteWebSocket
 Client reconnects ──► RouteWebSocket
                             │
                             ▼
-                       getState(name) = BUSY
+                       ConversationJobRegistry.isBusy(name) = true
                             ├─ send { "type": "busy" } to client
                             └─ getBusyJob(name).completionDeferred.await()  ← suspends
                                                 │
                                     inference completes
                                                 │
                                                 ▼
-                                       consume(name) → IDLE
+                                       deferred resolved with reply text
                                        send { "type": "done", "reply": "..." }
 ```
 
@@ -271,7 +271,7 @@ Client ──POST──► RouteConversation.post("/{name}/messages")
                                     inference completes
                                                 │
                                                 ▼
-                                       consume(name) → IDLE
+                                       deferred resolved with reply text
                                        respond { "ok": true, "reply": "..." }
 ```
 
@@ -283,8 +283,8 @@ BUSY job — 300 s with no token received
                             ▼
                        watchdog coroutine fires
                             └─ onError(name, "Inference timed out")
-                                    ├─ completionDeferred.completeExceptionally(...)
-                                    └─ job cleared → IDLE
+                                    ├─ job removed from registry → IDLE
+                                    └─ completionDeferred.completeExceptionally(...)
 
 WS/REST handler awaiting deferred
                             └─ runCatching { ... }.getOrNull() returns null
@@ -299,9 +299,9 @@ WS/REST handler awaiting deferred
 lm/
 ├── LMService.kt                     # Lifecycle: start, stop, register tools
 ├── conversation/
-│   ├── ConversationJob.kt           # Job data: state, replyBuffer, deferred, timers
-│   ├── ConversationJobRegistry.kt   # State machine + timer management (singleton)
-│   ├── ConversationState.kt         # enum: IDLE, BUSY, DONE
+│   ├── ConversationJob.kt           # Job data: state, replyBuffer, deferred, watchdog
+│   ├── ConversationJobRegistry.kt   # State machine + watchdog timer (singleton)
+│   ├── ConversationState.kt         # enum: IDLE, BUSY
 │   └── ConversationWsChunk.kt       # sealed: Token, Done, Error, Busy
 ├── handler/
 │   ├── ConversationHandler.kt       # Orchestration: create, update, delete, sendMessage
@@ -315,5 +315,5 @@ lm/
 └── tool/
     ├── GatewayTool.kt
     ├── ToolRegistry.kt
-    └── builtin/                     # DateTimeTool, CalculatorTool, LMServiceTool, stubs
+    └── builtin/                     # DateTimeTool, CalculatorTool
 ```

@@ -379,7 +379,33 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 }
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
-/* Thinking indicator */
+/* Stateless badge — toolbar */
+.stateless-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  background: rgba(250,204,21,.12);
+  color: #facc15;
+  border: 1px solid rgba(250,204,21,.25);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+/* Stateless dot — conv list item */
+.conv-stateless-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #facc15;
+  margin-left: 5px;
+  vertical-align: middle;
+  opacity: .8;
+  flex-shrink: 0;
+}
 .msg-bubble.thinking {
   opacity: .7;
   font-style: italic;

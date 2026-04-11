@@ -53,6 +53,7 @@ class ConversationHandler(
      * @param temperature      Sampler temperature.
      * @param tools            Tool names to bind to this conversation (e.g. ["datetime", "calculator"]).
      *                         Empty list means no tools.
+     * @param stateless        When true, no message history is loaded or persisted. Immutable after creation.
      * @return `false` if [name] already exists or the DB insert fails.
      */
     fun createConversation(
@@ -63,6 +64,7 @@ class ConversationHandler(
         topP: Double = 0.95,
         temperature: Double = 0.8,
         tools: List<String> = emptyList(),
+        stateless: Boolean = false,
     ): Boolean {
         val record = LMStoredConversation(
             name              = name,
@@ -72,12 +74,14 @@ class ConversationHandler(
             topP              = topP,
             temperature       = temperature,
             tools             = tools.takeIf { it.isNotEmpty() }?.joinToString(","),
-            createdAt         = System.currentTimeMillis()
+            createdAt         = System.currentTimeMillis(),
+            stateless         = stateless
         )
         return messageHandler.saveConversation(record).also { created ->
             if (created) {
-                val toolsInfo = if (tools.isNotEmpty()) ", tools=${tools}" else ""
-                ILog.i(TAG, "createConversation: '$name' created (config=$configLabel$toolsInfo)")
+                val toolsInfo = if (tools.isNotEmpty()) ", tools=$tools" else ""
+                val statelessInfo = if (stateless) ", stateless=true" else ""
+                ILog.i(TAG, "createConversation: '$name' created (config=$configLabel$toolsInfo$statelessInfo)")
             }
         }
     }
@@ -138,8 +142,8 @@ class ConversationHandler(
     fun hasConversation(name: String): Boolean =
         messageHandler.getConversation(name) != null
 
-    /** Returns all conversation names, newest-first. */
-    fun listConversations(): List<String> =
+    /** Returns all conversations as (name, stateless) pairs, newest-first. */
+    fun listConversations(): List<Pair<String, Boolean>> =
         messageHandler.listConversations()
 
     /**
@@ -199,14 +203,16 @@ class ConversationHandler(
                         ConversationJobRegistry.onToken(name, chunk.text)
                     }
                     is ConversationWsChunk.Done -> {
-                        // Persist before transitioning to DONE
-                        val seq = messageHandler.nextSeq(name)
-                        messageHandler.appendMessages(
-                            conversationName = name,
-                            userText         = message,
-                            modelText        = job.replyBuffer.toString(),
-                            seq              = seq
-                        )
+                        // Persist only for stateful conversations
+                        if (!messageHandler.isStateless(name)) {
+                            val seq = messageHandler.nextSeq(name)
+                            messageHandler.appendMessages(
+                                conversationName = name,
+                                userText         = message,
+                                modelText        = job.replyBuffer.toString(),
+                                seq              = seq
+                            )
+                        }
                         ConversationJobRegistry.onDone(name)
                         ILog.d(TAG, "sendMessage: '$name' complete, reply=${job.replyBuffer.length} chars")
                     }

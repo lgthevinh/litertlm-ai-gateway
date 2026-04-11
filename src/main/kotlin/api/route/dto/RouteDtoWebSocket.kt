@@ -22,7 +22,6 @@ data class WsBusyFrame(
 
 /**
  * Sent once per turn when inference completes, carrying the full reply.
- * Replaces the old token-streaming approach — the reply is delivered in one frame.
  */
 data class WsDoneFrame(
     val type: String = "done",

@@ -5,14 +5,16 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.base.log.ILog
+import java.util.concurrent.Executors
 
 /**
  * A single inference task submitted to the [EngineHandler] queue.
@@ -56,14 +58,27 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     /** Shared unbounded queue — all callers enqueue here regardless of which engine picks it up. */
     private val taskChannel = Channel<ConversationTask>(Channel.UNLIMITED)
 
-    private val engines = mutableListOf<Engine>()
-    private val scope   = CoroutineScope(Dispatchers.Default)
+    /**
+     * Each engine is paired with a single-thread dispatcher.
+     * The engine is initialized on that thread and all inference runs on the same thread —
+     * required for LiteRTLM native thread affinity.
+     */
+    private data class EngineEntry(
+        val engine: Engine,
+        val dispatcher: kotlinx.coroutines.CoroutineDispatcher
+    )
+
+    private val engineEntries = mutableListOf<EngineEntry>()
+    private val scope = CoroutineScope(kotlinx.coroutines.Dispatchers.Default)
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     /**
-     * Initialises [ENGINE_COUNT] engines and launches one worker coroutine per engine.
-     * Blocking engine init is offloaded to [Dispatchers.Default].
+     * Initialises [ENGINE_COUNT] engines, each on its own dedicated single thread,
+     * then launches one worker coroutine per engine pinned to that same thread.
+     *
+     * Each engine is initialized and used exclusively on its dedicated thread to satisfy
+     * LiteRTLM native thread-affinity requirements.
      *
      * @param onReady Called once all engines are ready. Called with `false` if any engine fails.
      */
@@ -71,15 +86,22 @@ class EngineHandler(private val engineConfig: EngineConfig) {
         scope.launch {
             try {
                 repeat(ENGINE_COUNT) { index ->
-                    val engine = Engine(engineConfig)
-                    engine.initialize()
-                    engines.add(engine)
+                    // Dedicated single thread for this engine — init and inference always run here
+                    val dispatcher = Executors.newSingleThreadExecutor { r ->
+                        Thread(r, "engine-thread-$index").also { it.isDaemon = true }
+                    }.asCoroutineDispatcher()
+
+                    val engine = withContext(dispatcher) {
+                        Engine(engineConfig).also { it.initialize() }
+                    }
+
+                    engineEntries.add(EngineEntry(engine, dispatcher))
                     ILog.i(TAG, "start: engine #$index ready")
                 }
 
-                // Launch one worker per engine
-                engines.forEachIndexed { index, engine ->
-                    launchWorker(index, engine)
+                // Launch one worker per engine, pinned to its dedicated thread
+                engineEntries.forEachIndexed { index, entry ->
+                    launchWorker(index, entry)
                 }
 
                 ILog.i(TAG, "start: all $ENGINE_COUNT engines ready")
@@ -97,7 +119,10 @@ class EngineHandler(private val engineConfig: EngineConfig) {
      */
     fun stop() {
         taskChannel.close()
-        engines.forEach { runCatching { it.close() } }
+        engineEntries.forEach { entry ->
+            runCatching { entry.engine.close() }
+            runCatching { (entry.dispatcher as? java.io.Closeable)?.close() }
+        }
         ILog.i(TAG, "stop: all engines closed")
     }
 
@@ -125,16 +150,18 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     // ── Worker ────────────────────────────────────────────────────────────────
 
     /**
-     * Launches a worker coroutine that loops on [taskChannel], processing one task at a time.
-     * Each worker exclusively owns [engine] — no sharing, no locking.
+     * Launches a worker coroutine pinned to [entry.dispatcher] (a single dedicated thread).
+     * The worker loops on [taskChannel], processing one task at a time on that thread.
+     * All engine calls (createConversation, sendMessageAsync, close) run on the same thread
+     * the engine was initialized on.
      */
-    private fun launchWorker(index: Int, engine: Engine) {
-        scope.launch(Dispatchers.Default) {
+    private fun launchWorker(index: Int, entry: EngineEntry) {
+        scope.launch(entry.dispatcher) {
             ILog.d(TAG, "worker #$index: started")
 
             for (task in taskChannel) {
                 ILog.d(TAG, "worker #$index: picked up task")
-                processTask(index, engine, task)
+                processTask(index, entry.engine, task)
             }
 
             ILog.d(TAG, "worker #$index: channel closed, shutting down")
@@ -142,7 +169,8 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     }
 
     /**
-     * Runs a single [ConversationTask] on [engine]:
+     * Runs a single [ConversationTask] on [engine].
+     * Already running on the engine's dedicated thread via [launchWorker].
      * 1. Creates a native Conversation with [ConversationTask.config]
      * 2. Streams tokens from [sendMessageAsync] into [ConversationTask.reply]
      * 3. Sends [ConversationWsChunk.Done] on completion or [ConversationWsChunk.Error] on failure

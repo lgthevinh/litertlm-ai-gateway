@@ -67,13 +67,13 @@ class MessageHandler(private val dao: DaoSqlite) {
     }
 
     /**
-     * Returns all stored conversation names, sorted newest-first.
+     * Returns all stored conversations as (name, stateless) pairs, sorted newest-first.
      */
-    fun listConversations(): List<String> {
+    fun listConversations(): List<Pair<String, Boolean>> {
         return try {
             dao.readAll(LMStoredConversation::class.java)
                 .sortedByDescending { it.createdAt }
-                .map { it.name }
+                .map { it.name to it.stateless }
         } catch (e: DaoException) {
             ILog.e(TAG, "listConversations: DB error: ${e.message}")
             emptyList()
@@ -245,9 +245,14 @@ class MessageHandler(private val dao: DaoSqlite) {
      */
     fun buildConfig(conversationName: String): ConversationConfig? {
         val record = getConversation(conversationName) ?: return null
-        val history = loadHistory(conversationName)
+        // Stateless conversations always start with empty history
+        val history = if (record.stateless) emptyList() else loadHistory(conversationName)
         return buildConversationConfig(record, history)
     }
+
+    /** Returns true if the conversation is stateless (no history load or persistence). */
+    fun isStateless(conversationName: String): Boolean =
+        getConversation(conversationName)?.stateless ?: false
 
     // ── Private helpers ───────────────────────────────────────────────────────
 

@@ -97,6 +97,7 @@
           <!-- Toolbar -->
           <div class="chat-toolbar">
             <span class="chat-toolbar-title" id="conv-title">Select a conversation</span>
+            <span id="stateless-badge" class="stateless-badge" style="display:none;">stateless</span>
             <span id="ws-status" class="ws-status disconnected">Disconnected</span>
           </div>
 
@@ -212,6 +213,15 @@
         <label class="nc-tool-check"><input type="checkbox" value="datetime"> datetime</label>
         <label class="nc-tool-check"><input type="checkbox" value="calculator"> calculator</label>
         <label class="nc-tool-check"><input type="checkbox" value="litertlm-docs"> litertlm-docs</label>
+      </div>
+    </div>
+    <div class="field">
+      <label class="nc-tool-check" style="gap:8px;">
+        <input type="checkbox" id="nc-stateless">
+        <span>Stateless mode</span>
+      </label>
+      <div id="nc-stateless-warning" style="display:none;margin-top:8px;padding:8px 10px;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.25);border-radius:6px;font-size:12px;color:#facc15;line-height:1.5;">
+        ⚠️ Messages will <strong>not</strong> be saved. This conversation has no memory between turns.
       </div>
     </div>
     <div id="nc-err" class="alert alert-error"></div>

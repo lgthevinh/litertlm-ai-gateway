@@ -11,6 +11,7 @@ import io.ktor.server.routing.route
 import org.thingai.app.aigateway.api.plugin.DualAuthPlugin
 import org.thingai.app.aigateway.api.route.dto.ApiErrorResponse
 import org.thingai.app.aigateway.api.route.dto.ConversationStateResponse
+import org.thingai.app.aigateway.api.route.dto.ConversationSummary
 import org.thingai.app.aigateway.api.route.dto.CreateConversationRequest
 import org.thingai.app.aigateway.api.route.dto.CreateConversationResponse
 import org.thingai.app.aigateway.api.route.dto.GetMessagesResponse
@@ -33,7 +34,7 @@ fun Route.conversation() {
         install(DualAuthPlugin)
 
         // GET /api/conversations
-        // Response 200: { "ok": true, "conversations": ["chat1", "chat2"] }
+        // Response 200: { "ok": true, "conversations": [{ "name": "chat1", "stateless": false }] }
         get {
             val handler = LMService.conversationHandler
             if (handler == null) {
@@ -41,7 +42,8 @@ fun Route.conversation() {
                 return@get
             }
 
-            call.respondJson(JsonUtils.toJson(ListConversationsResponse(ok = true, conversations = handler.listConversations())))
+            val summaries = handler.listConversations().map { ConversationSummary(name = it.first, stateless = it.second) }
+            call.respondJson(JsonUtils.toJson(ListConversationsResponse(ok = true, conversations = summaries)))
         }
 
         // POST /api/conversations
@@ -86,14 +88,18 @@ fun Route.conversation() {
                 name              = name,
                 systemInstruction = systemInstruction,
                 configLabel       = configLabel,
-                tools             = tools
+                tools             = tools,
+                stateless         = req.stateless ?: false
             )
             if (!created) {
                 call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Conversation '$name' already exists")), HttpStatusCode.Conflict)
                 return@post
             }
 
-            call.respondJson(JsonUtils.toJson(CreateConversationResponse(ok = true, name = name, config = configLabel)), HttpStatusCode.Created)
+            call.respondJson(
+                JsonUtils.toJson(CreateConversationResponse(ok = true, name = name, config = configLabel, stateless = req.stateless ?: false)),
+                HttpStatusCode.Created
+            )
         }
 
         // GET /api/conversations/{name}/messages
@@ -148,7 +154,7 @@ fun Route.conversation() {
                 return@get
             }
 
-            val state = handler.getConversationState(name).name  // "IDLE", "BUSY", "DONE"
+            val state = handler.getConversationState(name).name  // "IDLE", "BUSY"
             call.respondJson(JsonUtils.toJson(ConversationStateResponse(ok = true, name = name, state = state)))
         }
 
@@ -191,10 +197,9 @@ fun Route.conversation() {
                         val busyJob = ConversationJobRegistry.getBusyJob(name)
                         if (busyJob != null) {
                             reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
-                            if (reply != null) ConversationJobRegistry.consume(name)
-                            else errorMessage = "Inference failed"
+                            if (reply == null) errorMessage = "Inference failed"
                         } else {
-                            reply = ConversationJobRegistry.consume(name)
+                            errorMessage = "Inference failed"
                         }
                     }
                     is ConversationWsChunk.Error -> errorMessage = chunk.message

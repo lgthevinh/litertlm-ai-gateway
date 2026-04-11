@@ -9,21 +9,17 @@ import org.thingai.base.log.ILog
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Global registry tracking active and recently-completed inference jobs.
+ * Global registry tracking active inference jobs.
  *
  * ## Lifecycle
  * - [startJob]  — called when a message is submitted; creates a [ConversationJob] in BUSY state
- * - [onToken]   — called for each streamed token; resets the watchdog timer
- * - [onDone]    — called when inference completes; transitions to DONE, starts eviction timer
+ * - [onToken]   — called for each streamed token; appends to replyBuffer, resets watchdog
+ * - [onDone]    — called when inference completes; clears job, resolves deferred with reply text
  * - [onError]   — called on inference failure or watchdog timeout; clears job → IDLE
- * - [consume]   — called by WS handler on reconnect; returns the buffered reply, clears job → IDLE
  *
  * ## Timers
  * - **Watchdog** ([WATCHDOG_MS]): started on [startJob], reset on each [onToken].
  *   If it fires, the inference is considered hung → [onError] is invoked.
- * - **Eviction TTL** ([EVICTION_TTL_MS]): started on [onDone].
- *   If no WS client calls [consume] within this window, the job is cleared silently.
- *   The reply is already persisted to DB at this point — history load covers reconnecting clients.
  *
  * ## Thread safety
  * Backed by [ConcurrentHashMap]. State transitions are @Volatile on [ConversationJob].
@@ -34,9 +30,6 @@ object ConversationJobRegistry {
 
     /** Milliseconds of silence (no token) before a BUSY job is declared hung. */
     const val WATCHDOG_MS = 300_000L   // 300 s
-
-    /** Milliseconds a DONE job stays in the registry before being evicted. */
-    const val EVICTION_TTL_MS = 60_000L   // 60 s
 
     private val jobs = ConcurrentHashMap<String, ConversationJob>()
     private val scope = CoroutineScope(Dispatchers.Default)
@@ -53,8 +46,7 @@ object ConversationJobRegistry {
     /**
      * Returns true if [convName] has an active BUSY job.
      */
-    fun isBusy(convName: String): Boolean =
-        jobs[convName]?.state == ConversationState.BUSY
+    fun isBusy(convName: String): Boolean = jobs.containsKey(convName)
 
     /**
      * Creates a new [ConversationJob] in BUSY state and starts the watchdog timer.
@@ -64,7 +56,7 @@ object ConversationJobRegistry {
     fun startJob(convName: String): ConversationJob {
         val job = ConversationJob(convName = convName)
         val existing = jobs.putIfAbsent(convName, job)
-        check(existing == null) { "Job already exists for '$convName' in state ${existing!!.state}" }
+        check(existing == null) { "Job already exists for '$convName'" }
         job.watchdogJob = launchWatchdog(convName)
         ILog.i(TAG, "startJob: '$convName' BUSY")
         return job
@@ -84,62 +76,42 @@ object ConversationJobRegistry {
 
     /**
      * Called when inference completes successfully.
-     * Transitions job to DONE, resolves [ConversationJob.completionDeferred] with the
-     * full reply, and starts the eviction timer.
+     * Removes the job from the registry immediately, then resolves
+     * [ConversationJob.completionDeferred] with the full reply text.
+     * Any awaiting WS/REST handler receives the reply directly from the deferred.
      */
     fun onDone(convName: String) {
-        val job = jobs[convName] ?: return
+        val job = jobs.remove(convName) ?: return
         job.watchdogJob?.cancel()
-        job.state = ConversationState.DONE
         val reply = job.replyBuffer.toString()
         job.completionDeferred.complete(reply)
-        job.evictionJob = launchEviction(convName)
-        ILog.i(TAG, "onDone: '$convName' DONE (${reply.length} chars), eviction in ${EVICTION_TTL_MS / 1000}s")
+        ILog.i(TAG, "onDone: '$convName' complete (${reply.length} chars), job cleared")
     }
 
     /**
      * Called on inference failure or watchdog timeout.
-     * Completes [ConversationJob.completionDeferred] exceptionally and clears the job.
+     * Removes job and completes deferred exceptionally.
      */
     fun onError(convName: String, reason: String) {
         val job = jobs.remove(convName) ?: return
         job.watchdogJob?.cancel()
-        job.evictionJob?.cancel()
-        job.state = ConversationState.IDLE
+        val cause = RuntimeException(reason)
         if (!job.completionDeferred.isCompleted) {
-            job.completionDeferred.completeExceptionally(RuntimeException(reason))
+            job.completionDeferred.completeExceptionally(cause)
         }
         ILog.w(TAG, "onError: '$convName' → IDLE (reason: $reason)")
     }
 
     /**
-     * Called by the WS handler when a client connects to a DONE conversation.
-     * Returns the buffered reply and immediately clears the job → IDLE.
-     * Returns null if no DONE job exists.
-     */
-    fun consume(convName: String): String? {
-        val job = jobs[convName] ?: return null
-        if (job.state != ConversationState.DONE) return null
-        jobs.remove(convName)
-        job.evictionJob?.cancel()
-        ILog.i(TAG, "consume: '$convName' reply consumed, job cleared → IDLE")
-        return job.replyBuffer.toString()
-    }
-
-    /**
      * Returns the [ConversationJob] for [convName] if it is currently BUSY, or null.
-     * Used by the WS handler to await [ConversationJob.completionDeferred].
+     * Used by the WS/REST handler to await [ConversationJob.completionDeferred].
      */
-    fun getBusyJob(convName: String): ConversationJob? {
-        val job = jobs[convName] ?: return null
-        return if (job.state == ConversationState.BUSY) job else null
-    }
+    fun getBusyJob(convName: String): ConversationJob? = jobs[convName]
 
     /** Clears all jobs. Called on [org.thingai.app.aigateway.lm.LMService.stop]. */
     fun clear() {
         jobs.values.forEach { job ->
             job.watchdogJob?.cancel()
-            job.evictionJob?.cancel()
             if (!job.completionDeferred.isCompleted) {
                 job.completionDeferred.completeExceptionally(RuntimeException("Registry cleared"))
             }
@@ -156,15 +128,5 @@ object ConversationJobRegistry {
             delay(WATCHDOG_MS)
             ILog.w(TAG, "watchdog: '$convName' silent for ${WATCHDOG_MS / 1000}s — aborting job")
             onError(convName, "Inference timed out (no token for ${WATCHDOG_MS / 1000}s)")
-        }
-
-    /** Launches a coroutine that removes a DONE job after [EVICTION_TTL_MS]. */
-    private fun launchEviction(convName: String): Job =
-        scope.launch {
-            delay(EVICTION_TTL_MS)
-            val removed = jobs.remove(convName)
-            if (removed != null) {
-                ILog.i(TAG, "eviction: '$convName' DONE job evicted after ${EVICTION_TTL_MS / 1000}s")
-            }
         }
 }

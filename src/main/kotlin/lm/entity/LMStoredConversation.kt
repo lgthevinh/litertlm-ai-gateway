@@ -12,7 +12,8 @@ import org.thingai.base.dao.annotations.DaoTable
  * - [topK], [topP], [temperature] → `SamplerConfig(topK, topP, temperature)`
  *
  * [initialMessages] is intentionally NOT stored here — it is rebuilt at
- * re-open time from the [LMStoredMessage] history table.
+ * re-open time from the [LMStoredMessage] history table, unless [stateless]
+ * is true in which case no history is loaded and no messages are persisted.
  */
 @DaoTable(name = "lm_conversations")
 data class LMStoredConversation(
@@ -57,7 +58,18 @@ data class LMStoredConversation(
 
     /** Unix epoch ms when the conversation was first created. */
     @DaoColumn
-    var createdAt: Long
+    var createdAt: Long,
+
+    /**
+     * When true, this conversation operates without memory:
+     * - No message history is loaded into [ConversationConfig.initialMessages] — every turn starts fresh.
+     * - No user or model messages are persisted to the DB after each turn.
+     * - [GET /api/conversations/{name}/messages] always returns an empty list.
+     *
+     * Immutable after creation — cannot be changed via PATCH.
+     */
+    @DaoColumn
+    var stateless: Boolean = false
 
 ) {
     /** No-arg constructor required by DaoSqlite reflection. */
@@ -69,6 +81,7 @@ data class LMStoredConversation(
         topP              = 0.95,
         temperature       = 0.8,
         tools             = null,
-        createdAt         = 0L
+        createdAt         = 0L,
+        stateless         = false
     )
 }
