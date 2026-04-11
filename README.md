@@ -17,7 +17,8 @@ The gateway wraps Google AI Edge LiteRTLM (on-device LLM inference) and provides
 - JWT login + refresh tokens
 - API key management for programmatic clients
 - Conversation presets (assistant, coder, concise, creative)
-- Tool calling (built-in datetime + calculator)
+- Tool calling (built-in datetime + calculator) with support for custom tool implementations
+- Local inference: model runs on-device, keeping data private
 - SQLite persistence with a local data directory
 
 ## Who this is for
@@ -181,6 +182,7 @@ Authorization: Bearer <accessToken>
 - Internal customer support assistant running entirely on-device
 - Local developer helper with custom tool integration
 - Gateway for embedded or edge deployments without internet access
+- Data crawling normalization with LLM-assisted cleanup
 - Prototyping chat workflows with persistent history
 
 ## Data storage

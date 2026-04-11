@@ -61,7 +61,38 @@ data class SendMessageResponse(
     val reply: String
 )
 
-// ── GET /api/tools  ──────────────────────────────────────────────────────────
+// ── PATCH /conversations/{name}  ─────────────────────────────────────────────
+
+/**
+ * Request body for updating an existing conversation.
+ * All fields are optional — only non-null values are applied.
+ *
+ * @param name                   Rename the conversation.
+ * @param systemInstruction      New custom system prompt.
+ * @param clearSystemInstruction Set true to remove the custom system instruction and revert to a preset.
+ * @param config                 Builtin preset: "assistant"|"coder"|"concise"|"creative".
+ *                               Only applied when [systemInstruction] is null and [clearSystemInstruction] is false.
+ * @param topK                   Sampler top-K.
+ * @param topP                   Sampler top-P.
+ * @param temperature            Sampler temperature.
+ * @param tools                  New tool list. Pass empty list `[]` to clear all tools.
+ */
+data class UpdateConversationRequest(
+    val name: String?,
+    val systemInstruction: String?,
+    val clearSystemInstruction: Boolean?,
+    val config: String?,
+    val topK: Int?,
+    val topP: Double?,
+    val temperature: Double?,
+    val tools: List<String>?
+)
+
+data class UpdateConversationResponse(
+    val ok: Boolean,
+    val name: String,
+    val config: String
+)
 
 data class ToolParamDto(
     val name: String,

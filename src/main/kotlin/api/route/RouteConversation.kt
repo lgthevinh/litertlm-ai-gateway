@@ -5,6 +5,7 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import org.thingai.app.aigateway.api.plugin.DualAuthPlugin
@@ -17,10 +18,13 @@ import org.thingai.app.aigateway.api.route.dto.OkResponse
 import org.thingai.app.aigateway.api.route.dto.SendMessageRequest
 import org.thingai.app.aigateway.api.route.dto.SendMessageResponse
 import org.thingai.app.aigateway.api.route.dto.StoredMessageDto
+import org.thingai.app.aigateway.api.route.dto.UpdateConversationRequest
+import org.thingai.app.aigateway.api.route.dto.UpdateConversationResponse
 import org.thingai.app.aigateway.api.route.extension.respondJson
-import org.thingai.app.aigateway.engine.LMService
+import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.handler.WsChunk
 import org.thingai.app.aigateway.utils.JsonUtils
+import kotlin.collections.map
 
 fun Route.conversation() {
     route("/conversations") {
@@ -111,8 +115,13 @@ fun Route.conversation() {
                 return@get
             }
 
-            val messages = handler.getHistory(name).map {
-                StoredMessageDto(role = it.role, text = it.text, seq = it.seq, createdAt = it.createdAt)
+            val messages = handler.getHistory(name).map { it ->
+                StoredMessageDto(
+                    role      = it.role,
+                    text      = it.text,
+                    seq       = it.seq,
+                    createdAt = it.createdAt
+                )
             }
             call.respondJson(JsonUtils.toJson(GetMessagesResponse(ok = true, messages = messages)))
         }
@@ -166,6 +175,78 @@ fun Route.conversation() {
             }
 
             call.respondJson(JsonUtils.toJson(SendMessageResponse(ok = true, reply = replyBuffer.toString())))
+        }
+
+        // PATCH /api/conversations/{name}
+        // Body: any subset of { "name", "systemInstruction", "clearSystemInstruction",
+        //                        "config", "topK", "topP", "temperature", "tools" }
+        // Response 200: { "ok": true, "name": "<effectiveName>", "config": "<configLabel>" }
+        // Response 404: conversation not found
+        // Response 409: new name already taken
+        patch("/{name}") {
+            val handler = LMService.conversationHandler
+            if (handler == null) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Engine not ready")), HttpStatusCode.ServiceUnavailable)
+                return@patch
+            }
+
+            val name = call.parameters["name"]?.trim().orEmpty()
+            if (name.isBlank()) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Missing conversation name")), HttpStatusCode.BadRequest)
+                return@patch
+            }
+
+            val body = call.receiveText().trim()
+            if (body.isEmpty()) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Request body is required")), HttpStatusCode.BadRequest)
+                return@patch
+            }
+
+            val req = runCatching { JsonUtils.fromJson(body, UpdateConversationRequest::class.java) }.getOrNull()
+            if (req == null) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Invalid request body")), HttpStatusCode.BadRequest)
+                return@patch
+            }
+
+            // Resolve new name and effective config label for the response
+            val newName = req.name?.trim()?.takeIf { it.isNotBlank() }
+            val effectiveName = newName ?: name
+
+            // Check existence before attempting update to give a meaningful 404
+            if (!handler.hasConversation(name)) {
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Conversation '$name' not found")), HttpStatusCode.NotFound)
+                return@patch
+            }
+
+            val tools = req.tools?.map { it.trim() }?.filter { it.isNotBlank() }
+
+            val updated = handler.updateConversation(
+                name                   = name,
+                newName                = newName,
+                systemInstruction      = req.systemInstruction?.trim()?.takeIf { it.isNotBlank() },
+                clearSystemInstruction = req.clearSystemInstruction ?: false,
+                configLabel            = req.config?.trim()?.lowercase()?.takeIf { it.isNotBlank() },
+                topK                   = req.topK,
+                topP                   = req.topP,
+                temperature            = req.temperature,
+                tools                  = tools
+            )
+
+            if (!updated) {
+                // Most likely cause at this point is a name conflict
+                val error = if (newName != null) "Conversation '$newName' already exists"
+                            else "Failed to update conversation '$name'"
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, error)), HttpStatusCode.Conflict)
+                return@patch
+            }
+
+            call.respondJson(JsonUtils.toJson(UpdateConversationResponse(
+                ok     = true,
+                name   = effectiveName,
+                config = if (req.systemInstruction != null) "custom"
+                         else if (req.clearSystemInstruction == true) req.config ?: "assistant"
+                         else req.config ?: "updated"
+            )))
         }
 
         // DELETE /api/conversations/{name}

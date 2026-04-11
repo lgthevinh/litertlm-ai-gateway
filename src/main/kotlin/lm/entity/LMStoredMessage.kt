@@ -1,4 +1,4 @@
-package org.thingai.app.aigateway.engine.entity
+package org.thingai.app.aigateway.lm.entity
 
 import org.thingai.base.dao.annotations.DaoColumn
 import org.thingai.base.dao.annotations.DaoTable

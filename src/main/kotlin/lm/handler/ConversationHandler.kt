@@ -2,7 +2,8 @@ package org.thingai.app.aigateway.lm.handler
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import org.thingai.app.aigateway.engine.entity.LMStoredConversation
+import org.thingai.app.aigateway.lm.entity.LMStoredConversation
+import org.thingai.app.aigateway.lm.entity.LMStoredMessage
 import org.thingai.base.log.ILog
 
 /**
@@ -70,6 +71,55 @@ class ConversationHandler(
     }
 
     /**
+     * Updates an existing conversation's mutable fields.
+     *
+     * All parameters are optional — only non-null values are applied.
+     * Pass [clearSystemInstruction] = true to remove a custom system instruction
+     * and revert to a builtin preset.
+     *
+     * @param name                   Current conversation name (lookup key).
+     * @param newName                Rename the conversation. All message history is migrated.
+     * @param systemInstruction      New custom system prompt.
+     * @param clearSystemInstruction Set true to remove the custom system instruction.
+     * @param configLabel            Builtin preset: "assistant"|"coder"|"concise"|"creative".
+     *                               Only applied when [systemInstruction] is null and
+     *                               [clearSystemInstruction] is false.
+     * @param topK                   Sampler top-K.
+     * @param topP                   Sampler top-P.
+     * @param temperature            Sampler temperature.
+     * @param tools                  New tool list. Pass empty list to clear all tools.
+     * @return `false` if [name] does not exist, [newName] is already taken, or a DB error occurs.
+     */
+    fun updateConversation(
+        name: String,
+        newName: String? = null,
+        systemInstruction: String? = null,
+        clearSystemInstruction: Boolean = false,
+        configLabel: String? = null,
+        topK: Int? = null,
+        topP: Double? = null,
+        temperature: Double? = null,
+        tools: List<String>? = null,
+    ): Boolean {
+        return messageHandler.updateConversation(
+            name                   = name,
+            newName                = newName,
+            systemInstruction      = systemInstruction,
+            clearSystemInstruction = clearSystemInstruction,
+            configLabel            = configLabel,
+            topK                   = topK,
+            topP                   = topP,
+            temperature            = temperature,
+            tools                  = tools
+        ).also { updated ->
+            if (updated) {
+                val effectiveName = newName?.trim()?.takeIf { it.isNotBlank() } ?: name
+                ILog.i(TAG, "updateConversation: '$name' → '$effectiveName' updated")
+            }
+        }
+    }
+
+    /**
      * Deletes the conversation and all its message history from the DB.
      * @return `true` if the conversation existed and was removed.
      */
@@ -90,7 +140,7 @@ class ConversationHandler(
      * Returns all stored messages for [name] sorted oldest-first.
      * Returns empty list if the conversation does not exist.
      */
-    fun getHistory(name: String): List<org.thingai.app.aigateway.engine.entity.LMStoredMessage> =
+    fun getHistory(name: String): List<LMStoredMessage> =
         messageHandler.getHistory(name)
 
     // ── Inference ─────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ const state = {
   streaming:    false,    // true while model is generating
   messages:     {},       // { convName: [{role, text}] }
   revokeTarget: null,     // prefix of key being revoked
+  editTarget:   null,     // name of conversation being edited
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -50,6 +51,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('nc-config').addEventListener('change', e => {
     document.getElementById('nc-system-field').style.display =
+      e.target.value === 'custom' ? 'block' : 'none';
+  });
+
+  document.getElementById('ec-config').addEventListener('change', e => {
+    document.getElementById('ec-system-field').style.display =
       e.target.value === 'custom' ? 'block' : 'none';
   });
 });
@@ -147,7 +153,10 @@ function renderConvList(names) {
   el.innerHTML = names.map(n =>
     '<div class="conv-item ' + (n === state.activeConv ? 'active' : '') + '" onclick="selectConv(\'' + esc(n) + '\')">' +
     '<span>' + esc(n) + '</span>' +
-    '<span class="del-conv" onclick="deleteConv(event,\'' + esc(n) + '\')" title="Delete">\u00d7</span>' +
+    '<div class="conv-item-actions">' +
+    '<span class="edit-conv" onclick="openEditConvModal(event,\'' + esc(n) + '\')" title="Edit">&#9998;</span>' +
+    '<span class="del-conv"  onclick="deleteConv(event,\'' + esc(n) + '\')"        title="Delete">&times;</span>' +
+    '</div>' +
     '</div>'
   ).join('');
 }
@@ -464,9 +473,92 @@ async function deleteConv(evt, name) {
   } catch (_) {}
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// API Keys
-// ═══════════════════════════════════════════════════════════════════════
+// ── Edit conversation modal ───────────────────────────────────────────
+function openEditConvModal(evt, name) {
+  evt.stopPropagation();
+  state.editTarget = name;
+  document.getElementById('ec-name').value   = name;
+  document.getElementById('ec-config').value = 'assistant';
+  document.getElementById('ec-system').value = '';
+  document.getElementById('ec-system-field').style.display = 'none';
+  document.getElementById('ec-topk').value        = '';
+  document.getElementById('ec-topp').value        = '';
+  document.getElementById('ec-temperature').value = '';
+  document.querySelectorAll('#ec-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  setAlert(document.getElementById('ec-err'), null);
+  document.getElementById('ec-config').value = '';   // blank = no change
+  document.getElementById('edit-conv-modal').classList.add('open');
+  setTimeout(() => document.getElementById('ec-name').focus(), 50);
+}
+function closeEditConvModal() {
+  document.getElementById('edit-conv-modal').classList.remove('open');
+  state.editTarget = null;
+}
+
+async function saveEditConv() {
+  const errEl = document.getElementById('ec-err');
+  setAlert(errEl, null);
+
+  const originalName = state.editTarget;
+  if (!originalName) return;
+
+  const newName     = document.getElementById('ec-name').value.trim();
+  const configVal   = document.getElementById('ec-config').value;
+  const systemVal   = document.getElementById('ec-system').value.trim();
+  const topKVal     = document.getElementById('ec-topk').value.trim();
+  const topPVal     = document.getElementById('ec-topp').value.trim();
+  const tempVal     = document.getElementById('ec-temperature').value.trim();
+
+  const checkedTools = Array.from(document.querySelectorAll('#ec-tools-row input[type="checkbox"]'));
+  // Only send tools if at least one checkbox was interacted with (indeterminate = no change)
+  const toolsChanged = checkedTools.some(cb => !cb.indeterminate);
+  const tools = toolsChanged
+    ? checkedTools.filter(cb => cb.checked).map(cb => cb.value)
+    : undefined;
+
+  const body = {};
+  if (newName && newName !== originalName) body.name = newName;
+  if (configVal === 'custom') {
+    if (systemVal) body.systemInstruction = systemVal;
+  } else if (configVal === '_clear') {
+    body.clearSystemInstruction = true;
+  } else if (configVal) {
+    body.config = configVal;
+  }
+  if (topKVal)   body.topK        = parseInt(topKVal, 10);
+  if (topPVal)   body.topP        = parseFloat(topPVal);
+  if (tempVal)   body.temperature = parseFloat(tempVal);
+  if (tools !== undefined) body.tools = tools;
+
+  if (!Object.keys(body).length) {
+    setAlert(errEl, 'Nothing to update.');
+    return;
+  }
+
+  try {
+    const res = await authApi('/conversations/' + encodeURIComponent(originalName), 'PATCH', body);
+    if (!res.ok) { setAlert(errEl, res.error || 'Update failed.'); return; }
+
+    const effectiveName = res.name || newName || originalName;
+
+    // Update in-memory state if active conversation was renamed
+    if (state.activeConv === originalName && effectiveName !== originalName) {
+      state.messages[effectiveName] = state.messages[originalName];
+      delete state.messages[originalName];
+      state.activeConv = effectiveName;
+      document.getElementById('conv-title').textContent = effectiveName;
+      wsDisconnect();
+    }
+
+    closeEditConvModal();
+    await loadConversations();
+
+    // Reconnect WS if the active conversation was updated
+    if (state.activeConv === effectiveName) connectWs(effectiveName);
+  } catch (e) { setAlert(errEl, e.message); }
+}
+
+
 async function loadApiKeys() {
   const tbody = document.getElementById('key-tbody');
   try {

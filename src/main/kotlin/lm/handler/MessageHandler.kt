@@ -4,9 +4,9 @@ import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
-import org.thingai.app.aigateway.engine.entity.LMStoredConversation
-import org.thingai.app.aigateway.engine.entity.LMStoredMessage
-import org.thingai.app.aigateway.engine.predefine.BuiltinConversationConfig
+import org.thingai.app.aigateway.lm.entity.LMStoredConversation
+import org.thingai.app.aigateway.lm.entity.LMStoredMessage
+import org.thingai.app.aigateway.lm.builtin.BuiltinConversationConfig
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
 import org.thingai.base.dao.exceptions.DaoException
 import org.thingai.base.log.ILog
@@ -77,6 +77,103 @@ class MessageHandler(private val dao: DaoSqlite) {
         } catch (e: DaoException) {
             ILog.e(TAG, "listConversations: DB error: ${e.message}")
             emptyList()
+        }
+    }
+
+    /**
+     * Updates an existing conversation record with the provided fields.
+     *
+     * Only non-null parameters overwrite the stored value — null means "leave unchanged".
+     * [configLabel] is automatically set to "custom" when [systemInstruction] is provided.
+     *
+     * If [newName] is provided and differs from [name], the old record and all its messages
+     * are deleted and re-inserted under the new name (rename via copy).
+     *
+     * @return `false` if the conversation does not exist, the new name is already taken, or a DB error occurs.
+     */
+    fun updateConversation(
+        name: String,
+        newName: String? = null,
+        systemInstruction: String? = null,
+        clearSystemInstruction: Boolean = false,
+        configLabel: String? = null,
+        topK: Int? = null,
+        topP: Double? = null,
+        temperature: Double? = null,
+        tools: List<String>? = null,
+    ): Boolean {
+        val record = getConversation(name) ?: run {
+            ILog.d(TAG, "updateConversation: '$name' not found")
+            return false
+        }
+
+        // Resolve updated fields
+        val resolvedInstruction = when {
+            clearSystemInstruction -> null
+            systemInstruction != null -> systemInstruction.trim().takeIf { it.isNotBlank() }
+            else -> record.systemInstruction
+        }
+        val resolvedConfigLabel = when {
+            resolvedInstruction != null && systemInstruction != null -> "custom"
+            clearSystemInstruction && configLabel != null -> configLabel
+            clearSystemInstruction -> "assistant"
+            configLabel != null -> configLabel
+            else -> record.configLabel
+        }
+        val resolvedTools = when {
+            tools != null -> tools.filter { it.isNotBlank() }.takeIf { it.isNotEmpty() }?.joinToString(",")
+            else -> record.tools
+        }
+
+        val targetName = newName?.trim()?.takeIf { it.isNotBlank() } ?: name
+
+        return try {
+            if (targetName != name) {
+                // Name change — check target name is not already taken
+                if (getConversation(targetName) != null) {
+                    ILog.d(TAG, "updateConversation: rename target '$targetName' already exists")
+                    return false
+                }
+
+                // Re-insert conversation under new name
+                val renamed = record.copy(
+                    name              = targetName,
+                    systemInstruction = resolvedInstruction,
+                    configLabel       = resolvedConfigLabel,
+                    topK              = topK ?: record.topK,
+                    topP              = topP ?: record.topP,
+                    temperature       = temperature ?: record.temperature,
+                    tools             = resolvedTools
+                )
+                dao.insert(renamed)
+
+                // Migrate messages to new name
+                val messages = dao.query(LMStoredMessage::class.java, "conversationName", name)
+                messages.forEach { msg ->
+                    dao.insert(msg.copy(conversationName = targetName))
+                    dao.delete(msg)
+                }
+
+                // Delete old conversation record
+                dao.delete(record)
+                ILog.i(TAG, "updateConversation: '$name' renamed to '$targetName', ${messages.size} message(s) migrated")
+            } else {
+                // In-place update
+                val updated = record.copy(
+                    systemInstruction = resolvedInstruction,
+                    configLabel       = resolvedConfigLabel,
+                    topK              = topK ?: record.topK,
+                    topP              = topP ?: record.topP,
+                    temperature       = temperature ?: record.temperature,
+                    tools             = resolvedTools
+                )
+                dao.insertOrUpdate(updated)
+                ILog.i(TAG, "updateConversation: '$name' updated")
+            }
+            true
+        } catch (e: DaoException) {
+            ILog.e(TAG, "updateConversation: DB error: ${e.message}")
+            false
         }
     }
 

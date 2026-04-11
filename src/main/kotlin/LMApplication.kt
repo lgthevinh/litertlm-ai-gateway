@@ -5,9 +5,9 @@ import com.google.ai.edge.litertlm.EngineConfig
 import org.thingai.app.aigateway.auth.LMApiKey
 import org.thingai.app.aigateway.auth.LMServiceApiKey
 import org.thingai.app.aigateway.auth.LMServiceAuth
-import org.thingai.app.aigateway.engine.LMService
-import org.thingai.app.aigateway.engine.entity.LMStoredConversation
-import org.thingai.app.aigateway.engine.entity.LMStoredMessage
+import org.thingai.app.aigateway.lm.LMService
+import org.thingai.app.aigateway.lm.entity.LMStoredConversation
+import org.thingai.app.aigateway.lm.entity.LMStoredMessage
 import org.thingai.app.aigateway.utils.EnvConfig
 import org.thingai.base.Service
 import org.thingai.base.log.ILog

@@ -12,7 +12,7 @@ import org.thingai.app.aigateway.api.route.dto.WsDoneFrame
 import org.thingai.app.aigateway.api.route.dto.WsErrorFrame
 import org.thingai.app.aigateway.api.route.dto.WsIncomingMessage
 import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
-import org.thingai.app.aigateway.engine.LMService
+import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.handler.WsChunk
 import org.thingai.app.aigateway.utils.JsonUtils
 

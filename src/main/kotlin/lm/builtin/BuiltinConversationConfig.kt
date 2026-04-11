@@ -1,4 +1,4 @@
-package org.thingai.app.aigateway.engine.predefine
+package org.thingai.app.aigateway.lm.builtin
 
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
