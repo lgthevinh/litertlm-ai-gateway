@@ -48,5 +48,6 @@ model/
 
 ### Environment ###
 .env
+litertlm-gateway.service
 
 rogodocs/
