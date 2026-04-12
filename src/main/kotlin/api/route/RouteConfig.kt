@@ -9,6 +9,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 import org.thingai.app.aigateway.api.route.extension.respondJson
+import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
 import org.thingai.app.aigateway.utils.JsonUtils
 
@@ -37,6 +38,17 @@ fun Route.config() {
             val response = JsonObject().apply {
                 addProperty("ok", true)
                 add("tools", arr)
+            }
+            call.respondJson(JsonUtils.toJson(response))
+        }
+
+        // GET /api/queue — current inference queue size (public, no auth)
+        // Returns { "ok": true, "size": 0 }
+        get("/queue") {
+            val size = LMService.conversationHandler?.getQueueSize() ?: 0
+            val response = JsonObject().apply {
+                addProperty("ok", true)
+                addProperty("size", size)
             }
             call.respondJson(JsonUtils.toJson(response))
         }

@@ -15,6 +15,7 @@ import org.thingai.app.aigateway.api.route.dto.WsBusyFrame
 import org.thingai.app.aigateway.api.route.dto.WsDoneFrame
 import org.thingai.app.aigateway.api.route.dto.WsErrorFrame
 import org.thingai.app.aigateway.api.route.dto.WsIncomingMessage
+import org.thingai.app.aigateway.api.route.dto.WsQueuedFrame
 import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
 import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
@@ -105,6 +106,9 @@ fun Route.conversationWebSocket() {
             // Launch detached inference — collect the single Busy/Error signal
             handler.sendMessage(name, message).collect { chunk ->
                 when (chunk) {
+                    is ConversationWsChunk.Queued -> {
+                        sendJson(WsQueuedFrame(position = chunk.position))
+                    }
                     is ConversationWsChunk.Busy -> {
                         val busyJob = ConversationJobRegistry.getBusyJob(name)
                         if (busyJob != null) {

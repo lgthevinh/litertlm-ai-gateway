@@ -135,8 +135,12 @@ function showPage(name) {
   // Reset scroll on every page switch so every page starts at the top
   document.querySelector('main')?.scrollTo({ top: 0 });
 
+  // Stop queue polling when leaving the page
+  stopQueuePolling();
+
   if (name === 'conversations') loadConversations();
   if (name === 'apikeys')       loadApiKeys();
+  if (name === 'queue')         startQueuePolling();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -337,10 +341,19 @@ function connectWs(name) {
 function handleWsFrame(convName, frame) {
   const box = document.getElementById('chat-box');
 
+  if (frame.type === 'queued') {
+    state.streaming = true;
+    document.getElementById('send-btn').disabled   = true;
+    document.getElementById('chat-input').disabled = true;
+    showQueuedBubble(box, frame.position);
+    return;
+  }
+
   if (frame.type === 'busy') {
     state.streaming = true;
     document.getElementById('send-btn').disabled   = true;
     document.getElementById('chat-input').disabled = true;
+    removeQueuedBubble(box);
     showThinkingBubble(box);
     return;
   }
@@ -379,7 +392,7 @@ function handleWsFrame(convName, frame) {
   }
 
   if (frame.type === 'error') {
-    const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble');
+    const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble') || box.querySelector('.queued-bubble');
     if (inProgress) inProgress.remove();
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
@@ -417,6 +430,23 @@ function sendMessage() {
   document.getElementById('send-btn').disabled   = true;
   document.getElementById('chat-input').disabled = true;
   state.ws.send(JSON.stringify({ message: text }));
+}
+
+// ── Queued bubble helpers ────────────────────────────────────────────
+function showQueuedBubble(box, position) {
+  removeQueuedBubble(box);
+  const empty = box.querySelector('.chat-empty');
+  if (empty) empty.remove();
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg model queued-bubble';
+  wrapper.innerHTML = '<div class="msg-label">Model</div><div class="msg-bubble queued">Queued (#' + position + ')\u2026</div>';
+  box.appendChild(wrapper);
+  box.scrollTop = box.scrollHeight;
+}
+
+function removeQueuedBubble(box) {
+  const bubble = box.querySelector('.queued-bubble');
+  if (bubble) bubble.remove();
 }
 
 // ── Thinking bubble helpers ───────────────────────────────────────────
@@ -672,6 +702,40 @@ async function confirmRevoke() {
     closeRevokeModal();
     await loadApiKeys();
   } catch (e) { setAlert(errEl, e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Queue
+// ═══════════════════════════════════════════════════════════════════════
+var queuePollTimer = null;
+
+function startQueuePolling() {
+  loadQueue();
+  queuePollTimer = setInterval(loadQueue, 2000);
+}
+
+function stopQueuePolling() {
+  if (queuePollTimer) { clearInterval(queuePollTimer); queuePollTimer = null; }
+}
+
+async function loadQueue() {
+  try {
+    const res = await api('/queue', 'GET');
+    if (!res.ok) return;
+    var size = res.size || 0;
+    document.getElementById('queue-size').textContent = size;
+    document.getElementById('queue-engine-status').textContent =
+      size === 0 ? 'Engine idle' : size === 1 ? 'Processing 1 task' : 'Processing 1 task, ' + (size - 1) + ' queued';
+
+    // Update nav badge
+    var badge = document.getElementById('nav-queue-badge');
+    if (size > 0) {
+      badge.textContent = size;
+      badge.style.display = 'inline-flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════

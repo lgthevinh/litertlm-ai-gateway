@@ -161,6 +161,9 @@ class ConversationHandler(
     fun getConversationState(name: String): ConversationState =
         ConversationJobRegistry.getState(name)
 
+    /** Returns the current number of tasks queued + in progress on the engine. */
+    fun getQueueSize(): Int = engineHandler.getQueueSize()
+
     /**
      * Submits [message] to the conversation identified by [name].
      *
@@ -225,7 +228,11 @@ class ConversationHandler(
             }
         }
 
-        // 5. Signal WS handler to await the job
+        // 5. Signal WS handler — queued position if engine is busy, then Busy
+        val queueSize = engineHandler.getQueueSize()
+        if (queueSize > 0) {
+            emit(ConversationWsChunk.Queued(position = queueSize + 1))
+        }
         emit(ConversationWsChunk.Busy)
     }
 }

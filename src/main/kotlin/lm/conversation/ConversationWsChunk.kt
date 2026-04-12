@@ -17,6 +17,12 @@ sealed class ConversationWsChunk {
     data class Error(val message: String) : ConversationWsChunk()
 
     /**
+     * Task is queued — the engine is busy with another conversation.
+     * [position] is 1-based: 2 = one task ahead, 3 = two tasks ahead, etc.
+     */
+    data class Queued(val position: Int) : ConversationWsChunk()
+
+    /**
      * Inference has been launched as a detached job.
      * The WS handler should await [ConversationJobRegistry]
      * rather than collecting further tokens from this flow.

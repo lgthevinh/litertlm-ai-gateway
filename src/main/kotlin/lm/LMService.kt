@@ -76,7 +76,7 @@ object LMService {
                     messageHandler = newMessageHandler,
                     engineHandler  = newEngineHandler
                 )
-                ILog.i(TAG, "start: ready — ${EngineHandler.ENGINE_COUNT} engines online")
+                ILog.i(TAG, "start: ready — engine online")
             } else {
                 ILog.e(TAG, "start: engine init failed")
             }

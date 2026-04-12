@@ -15,16 +15,17 @@ import kotlinx.coroutines.withContext
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.base.log.ILog
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A single inference task submitted to the [EngineHandler] queue.
  *
- * @param config   The fully-built [com.google.ai.edge.litertlm.ConversationConfig]
- *                 including system instruction, sampler, and initial messages (history).
- * @param message  The new user message to send.
- * @param reply    Channel used to stream [ConversationWsChunk] frames back to the caller.
- *                 The worker sends tokens, then [ConversationWsChunk.Done] or [ConversationWsChunk.Error],
- *                 then closes the channel.
+ * @param config  The fully-built [ConversationConfig] including system instruction,
+ *                sampler config, history, and tools.
+ * @param message The new user message to send.
+ * @param reply   Channel used to stream [ConversationWsChunk] frames back to the caller.
+ *                The worker sends tokens, then [ConversationWsChunk.Done] or
+ *                [ConversationWsChunk.Error], then closes the channel.
  */
 data class ConversationTask(
     val config: ConversationConfig,
@@ -33,78 +34,56 @@ data class ConversationTask(
 )
 
 /**
- * Manages a fixed pool of [Engine] instances and a shared task queue.
+ * Owns a single [Engine] instance and processes inference tasks one at a time.
  *
  * Architecture:
- * - [ENGINE_COUNT] engines are initialised on [start].
- * - A single unbounded [taskChannel] accepts [ConversationTask] submissions from any caller.
- * - One coroutine worker per engine loops on the queue — picks a task, runs inference,
- *   streams [ConversationWsChunk] frames back through [ConversationTask.reply], then picks the next task.
- * - No engine is shared between workers — each worker owns its engine exclusively,
- *   so no locking is needed during inference.
- * - If all engines are busy, callers queue and wait naturally (backpressure via Channel).
+ * - One dedicated thread ([engineThread]) owns the engine for its entire lifetime.
+ *   Both [Engine.initialize] and all [processTask] calls run on this thread to satisfy
+ *   LiteRTLM native thread-affinity requirements.
+ * - An unbounded [taskChannel] accepts [ConversationTask] submissions from any caller.
+ *   Tasks are serialized — one at a time — naturally via the channel.
+ * - If inference is running, new tasks queue in [taskChannel] and wait their turn.
  *
  * Lifecycle:
- * - Call [start] once after construction to initialise engines and launch workers.
- * - Call [stop] to shut down gracefully (closes the task channel, joins workers).
+ * - Call [start] once after construction to initialize the engine and launch the worker.
+ * - Call [stop] to shut down gracefully — closes the task channel and the engine.
  */
 class EngineHandler(private val engineConfig: EngineConfig) {
 
     companion object {
         private const val TAG = "EngineHandler"
-        const val ENGINE_COUNT = 2
     }
 
-    /** Shared unbounded queue — all callers enqueue here regardless of which engine picks it up. */
+    /** Unbounded queue — callers enqueue here and wait their turn. */
     private val taskChannel = Channel<ConversationTask>(Channel.UNLIMITED)
 
-    /**
-     * Each engine is paired with a single-thread dispatcher.
-     * The engine is initialized on that thread and all inference runs on the same thread —
-     * required for LiteRTLM native thread affinity.
-     */
-    private data class EngineEntry(
-        val engine: Engine,
-        val dispatcher: kotlinx.coroutines.CoroutineDispatcher
-    )
+    /** Tracks number of tasks in queue + currently processing. Incremented on submit, decremented when worker finishes. */
+    private val queueCounter = AtomicInteger(0)
 
-    private val engineEntries = mutableListOf<EngineEntry>()
-    private val scope = CoroutineScope(kotlinx.coroutines.Dispatchers.Default)
+    /** Single dedicated thread — engine init and all inference run here. */
+    private val engineThread = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "engine-thread").also { it.isDaemon = true }
+    }.asCoroutineDispatcher()
+
+    private val scope = CoroutineScope(engineThread)
+
+    private var engine: Engine? = null
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     /**
-     * Initialises [ENGINE_COUNT] engines, each on its own dedicated single thread,
-     * then launches one worker coroutine per engine pinned to that same thread.
+     * Initializes the engine on [engineThread] then launches the worker loop on the same thread.
      *
-     * Each engine is initialized and used exclusively on its dedicated thread to satisfy
-     * LiteRTLM native thread-affinity requirements.
-     *
-     * @param onReady Called once all engines are ready. Called with `false` if any engine fails.
+     * @param onReady Called with `true` when ready, `false` if initialization fails.
      */
     fun start(onReady: (Boolean) -> Unit = {}) {
         scope.launch {
             try {
-                repeat(ENGINE_COUNT) { index ->
-                    // Dedicated single thread for this engine — init and inference always run here
-                    val dispatcher = Executors.newSingleThreadExecutor { r ->
-                        Thread(r, "engine-thread-$index").also { it.isDaemon = true }
-                    }.asCoroutineDispatcher()
-
-                    val engine = withContext(dispatcher) {
-                        Engine(engineConfig).also { it.initialize() }
-                    }
-
-                    engineEntries.add(EngineEntry(engine, dispatcher))
-                    ILog.i(TAG, "start: engine #$index ready")
+                engine = Engine(engineConfig).also {
+                    it.initialize()
+                    ILog.i(TAG, "start: engine ready")
                 }
-
-                // Launch one worker per engine, pinned to its dedicated thread
-                engineEntries.forEachIndexed { index, entry ->
-                    launchWorker(index, entry)
-                }
-
-                ILog.i(TAG, "start: all $ENGINE_COUNT engines ready")
+                launchWorker()
                 onReady(true)
             } catch (e: Exception) {
                 ILog.e(TAG, "start: engine init failed: ${e.message}")
@@ -114,32 +93,30 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     }
 
     /**
-     * Closes the task channel and all engines.
-     * In-flight tasks will complete; queued tasks will receive an error.
+     * Closes the task channel and the engine.
      */
     fun stop() {
         taskChannel.close()
-        engineEntries.forEach { entry ->
-            runCatching { entry.engine.close() }
-            runCatching { (entry.dispatcher as? java.io.Closeable)?.close() }
-        }
-        ILog.i(TAG, "stop: all engines closed")
+        runCatching { engine?.close() }
+        runCatching { (engineThread as? java.io.Closeable)?.close() }
+        ILog.i(TAG, "stop: engine closed")
     }
 
     // ── Submission ────────────────────────────────────────────────────────────
 
     /**
-     * Submits a [ConversationTask] to the queue and returns a [Flow] of [ConversationWsChunk] frames.
+     * Submits a [ConversationTask] to the queue and returns a [Flow] of [ConversationWsChunk].
      *
-     * The flow suspends until a worker picks up the task, then emits tokens as they arrive.
-     * Completes when [ConversationWsChunk.Done] is received or an error occurs.
+     * Increments the queue counter on submit. The counter is decremented when the worker
+     * finishes the task. Use [getQueueSize] to check position before calling this.
      *
-     * Callers collect this flow to receive the streaming reply — both REST (collect all,
-     * return final string) and WebSocket (emit each frame) routes use this same path.
+     * The flow suspends until the worker picks up the task, then emits tokens as they arrive.
+     * Completes when [ConversationWsChunk.Done] or [ConversationWsChunk.Error] is received.
      */
     fun submit(task: ConversationTask): Flow<ConversationWsChunk> = flow {
+        queueCounter.incrementAndGet()
         taskChannel.send(task)
-        ILog.d(TAG, "submit: task queued")
+        ILog.d(TAG, "submit: task queued (queue size: ${queueCounter.get()})")
 
         for (chunk in task.reply) {
             emit(chunk)
@@ -147,36 +124,40 @@ class EngineHandler(private val engineConfig: EngineConfig) {
         }
     }
 
+    /** Returns the current number of tasks queued + in progress. */
+    fun getQueueSize(): Int = queueCounter.get()
+
     // ── Worker ────────────────────────────────────────────────────────────────
 
     /**
-     * Launches a worker coroutine pinned to [entry.dispatcher] (a single dedicated thread).
-     * The worker loops on [taskChannel], processing one task at a time on that thread.
-     * All engine calls (createConversation, sendMessageAsync, close) run on the same thread
-     * the engine was initialized on.
+     * Loops on [taskChannel] on [engineThread], processing one task at a time.
+     * Called from [start] — already running on [engineThread].
      */
-    private fun launchWorker(index: Int, entry: EngineEntry) {
-        scope.launch(entry.dispatcher) {
-            ILog.d(TAG, "worker #$index: started")
+    private fun launchWorker() {
+        scope.launch {
+            ILog.d(TAG, "worker: started")
 
             for (task in taskChannel) {
-                ILog.d(TAG, "worker #$index: picked up task")
-                processTask(index, entry.engine, task)
+                ILog.d(TAG, "worker: picked up task")
+                engine?.let { processTask(it, task) }
+                    ?: task.reply.send(ConversationWsChunk.Error("Engine not initialized"))
+                queueCounter.decrementAndGet()
             }
 
-            ILog.d(TAG, "worker #$index: channel closed, shutting down")
+            ILog.d(TAG, "worker: channel closed, shutting down")
         }
     }
 
     /**
-     * Runs a single [ConversationTask] on [engine].
-     * Already running on the engine's dedicated thread via [launchWorker].
-     * 1. Creates a native Conversation with [ConversationTask.config]
-     * 2. Streams tokens from [sendMessageAsync] into [ConversationTask.reply]
+     * Runs a single [ConversationTask]:
+     * 1. Creates a transient [Conversation] from [task.config]
+     * 2. Streams tokens into [task.reply]
      * 3. Sends [ConversationWsChunk.Done] on completion or [ConversationWsChunk.Error] on failure
-     * 4. Closes the native Conversation to release engine resources
+     * 4. Closes the [Conversation] to release engine resources
+     *
+     * Always runs on [engineThread] — same thread the engine was initialized on.
      */
-    private suspend fun processTask(index: Int, engine: Engine, task: ConversationTask) {
+    private suspend fun processTask(engine: Engine, task: ConversationTask) {
         var conversation: Conversation? = null
         var inferenceError = false
         try {
@@ -184,7 +165,7 @@ class EngineHandler(private val engineConfig: EngineConfig) {
 
             conversation.sendMessageAsync(task.message)
                 .catch { e ->
-                    ILog.e(TAG, "worker #$index: inference error: ${e.message}")
+                    ILog.e(TAG, "worker: inference error: ${e.message}")
                     task.reply.send(ConversationWsChunk.Error(e.message ?: "Inference failed"))
                     inferenceError = true
                 }
@@ -194,10 +175,10 @@ class EngineHandler(private val engineConfig: EngineConfig) {
 
             if (!inferenceError) {
                 task.reply.send(ConversationWsChunk.Done)
-                ILog.d(TAG, "worker #$index: task complete")
+                ILog.d(TAG, "worker: task complete")
             }
         } catch (e: Exception) {
-            ILog.e(TAG, "worker #$index: task failed: ${e.message}")
+            ILog.e(TAG, "worker: task failed: ${e.message}")
             runCatching { task.reply.send(ConversationWsChunk.Error(e.message ?: "Unknown error")) }
         } finally {
             runCatching { conversation?.close() }

@@ -3,13 +3,23 @@ package org.thingai.app.aigateway.api.route.dto
 // ── WebSocket conversation frames ─────────────────────────────────────────────
 //
 // Client  →  Server:  WsIncomingMessage
-// Server  →  Client:  WsBusyFrame | WsTokenFrame | WsDoneFrame | WsErrorFrame
+// Server  →  Client:  WsQueuedFrame | WsBusyFrame | WsTokenFrame | WsDoneFrame | WsErrorFrame
 
 /**
  * Frame sent by the client to submit a message.
  */
 data class WsIncomingMessage(
     val message: String?
+)
+
+/**
+ * Sent when the task is queued behind other conversations.
+ * [position] is 1-based: 2 = one task ahead, 3 = two ahead, etc.
+ * Followed by [WsBusyFrame] when inference actually starts.
+ */
+data class WsQueuedFrame(
+    val type: String = "queued",
+    val position: Int
 )
 
 /**
