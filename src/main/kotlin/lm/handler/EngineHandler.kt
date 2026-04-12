@@ -11,26 +11,40 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.base.log.ILog
+import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A single inference task submitted to the [EngineHandler] queue.
  *
- * @param config  The fully-built [ConversationConfig] including system instruction,
- *                sampler config, history, and tools.
- * @param message The new user message to send.
- * @param reply   Channel used to stream [ConversationWsChunk] frames back to the caller.
- *                The worker sends tokens, then [ConversationWsChunk.Done] or
- *                [ConversationWsChunk.Error], then closes the channel.
+ * @param convName The conversation this task belongs to (used for queue visibility).
+ * @param config   The fully-built [ConversationConfig] including system instruction,
+ *                 sampler config, history, and tools.
+ * @param message  The new user message to send.
+ * @param reply    Channel used to stream [ConversationWsChunk] frames back to the caller.
+ *                 The worker sends tokens, then [ConversationWsChunk.Done] or
+ *                 [ConversationWsChunk.Error], then closes the channel.
  */
 data class ConversationTask(
+    val convName: String,
     val config: ConversationConfig,
     val message: String,
     val reply: Channel<ConversationWsChunk> = Channel(Channel.UNLIMITED)
+)
+
+/**
+ * Represents an entry in the inference queue, returned by [EngineHandler.getQueueEntries].
+ *
+ * @param name     Conversation name.
+ * @param position 1-based position (1 = currently processing).
+ * @param status   "processing" for position 1, "waiting" for others.
+ */
+data class QueueEntry(
+    val name: String,
+    val position: Int,
+    val status: String
 )
 
 /**
@@ -42,7 +56,7 @@ data class ConversationTask(
  *   LiteRTLM native thread-affinity requirements.
  * - An unbounded [taskChannel] accepts [ConversationTask] submissions from any caller.
  *   Tasks are serialized — one at a time — naturally via the channel.
- * - If inference is running, new tasks queue in [taskChannel] and wait their turn.
+ * - A [queueNames] deque tracks conversation names in submission order for queue visibility.
  *
  * Lifecycle:
  * - Call [start] once after construction to initialize the engine and launch the worker.
@@ -57,8 +71,11 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     /** Unbounded queue — callers enqueue here and wait their turn. */
     private val taskChannel = Channel<ConversationTask>(Channel.UNLIMITED)
 
-    /** Tracks number of tasks in queue + currently processing. Incremented on submit, decremented when worker finishes. */
-    private val queueCounter = AtomicInteger(0)
+    /**
+     * Ordered list of conversation names currently in the queue (including the one being processed).
+     * First element = currently processing. Thread-safe.
+     */
+    private val queueNames = ConcurrentLinkedDeque<String>()
 
     /** Single dedicated thread — engine init and all inference run here. */
     private val engineThread = Executors.newSingleThreadExecutor { r ->
@@ -107,16 +124,13 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     /**
      * Submits a [ConversationTask] to the queue and returns a [Flow] of [ConversationWsChunk].
      *
-     * Increments the queue counter on submit. The counter is decremented when the worker
-     * finishes the task. Use [getQueueSize] to check position before calling this.
-     *
      * The flow suspends until the worker picks up the task, then emits tokens as they arrive.
      * Completes when [ConversationWsChunk.Done] or [ConversationWsChunk.Error] is received.
      */
     fun submit(task: ConversationTask): Flow<ConversationWsChunk> = flow {
-        queueCounter.incrementAndGet()
+        queueNames.addLast(task.convName)
         taskChannel.send(task)
-        ILog.d(TAG, "submit: task queued (queue size: ${queueCounter.get()})")
+        ILog.d(TAG, "submit: '${task.convName}' queued (queue: ${queueNames.size})")
 
         for (chunk in task.reply) {
             emit(chunk)
@@ -125,7 +139,21 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     }
 
     /** Returns the current number of tasks queued + in progress. */
-    fun getQueueSize(): Int = queueCounter.get()
+    fun getQueueSize(): Int = queueNames.size
+
+    /**
+     * Returns an ordered snapshot of the queue with position and status for each entry.
+     * Position 1 = currently processing, position 2+ = waiting.
+     */
+    fun getQueueEntries(): List<QueueEntry> {
+        return queueNames.toList().mapIndexed { index, name ->
+            QueueEntry(
+                name     = name,
+                position = index + 1,
+                status   = if (index == 0) "processing" else "waiting"
+            )
+        }
+    }
 
     // ── Worker ────────────────────────────────────────────────────────────────
 
@@ -138,10 +166,10 @@ class EngineHandler(private val engineConfig: EngineConfig) {
             ILog.d(TAG, "worker: started")
 
             for (task in taskChannel) {
-                ILog.d(TAG, "worker: picked up task")
+                ILog.d(TAG, "worker: picked up '${task.convName}'")
                 engine?.let { processTask(it, task) }
                     ?: task.reply.send(ConversationWsChunk.Error("Engine not initialized"))
-                queueCounter.decrementAndGet()
+                queueNames.pollFirst()
             }
 
             ILog.d(TAG, "worker: channel closed, shutting down")
@@ -175,10 +203,10 @@ class EngineHandler(private val engineConfig: EngineConfig) {
 
             if (!inferenceError) {
                 task.reply.send(ConversationWsChunk.Done)
-                ILog.d(TAG, "worker: task complete")
+                ILog.d(TAG, "worker: '${task.convName}' complete")
             }
         } catch (e: Exception) {
-            ILog.e(TAG, "worker: task failed: ${e.message}")
+            ILog.e(TAG, "worker: '${task.convName}' failed: ${e.message}")
             runCatching { task.reply.send(ConversationWsChunk.Error(e.message ?: "Unknown error")) }
         } finally {
             runCatching { conversation?.close() }

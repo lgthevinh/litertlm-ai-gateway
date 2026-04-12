@@ -722,7 +722,9 @@ async function loadQueue() {
   try {
     const res = await api('/queue', 'GET');
     if (!res.ok) return;
-    var size = res.size || 0;
+    var size  = res.size || 0;
+    var queue = res.queue || [];
+
     document.getElementById('queue-size').textContent = size;
     document.getElementById('queue-engine-status').textContent =
       size === 0 ? 'Engine idle' : size === 1 ? 'Processing 1 task' : 'Processing 1 task, ' + (size - 1) + ' queued';
@@ -734,6 +736,25 @@ async function loadQueue() {
       badge.style.display = 'inline-flex';
     } else {
       badge.style.display = 'none';
+    }
+
+    // Update queue table
+    var tableCard = document.getElementById('queue-table-card');
+    var tbody     = document.getElementById('queue-tbody');
+    if (queue.length > 0) {
+      tableCard.style.display = '';
+      tbody.innerHTML = queue.map(function(entry) {
+        var statusClass = entry.status === 'processing' ? 'queue-status-processing' : 'queue-status-waiting';
+        var statusLabel = entry.status === 'processing' ? 'Processing' : 'Waiting';
+        return '<tr>' +
+          '<td>' + esc(String(entry.position)) + '</td>' +
+          '<td>' + esc(entry.name) + '</td>' +
+          '<td><span class="queue-status-badge ' + statusClass + '">' + statusLabel + '</span></td>' +
+          '</tr>';
+      }).join('');
+    } else {
+      tableCard.style.display = 'none';
+      tbody.innerHTML = '';
     }
   } catch (_) {}
 }

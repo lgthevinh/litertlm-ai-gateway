@@ -783,3 +783,37 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
   font-weight: 600;
   margin-left: auto;
 }
+
+/* Queue table */
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.queue-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.queue-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.queue-table tr:last-child td { border-bottom: none; }
+.queue-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.queue-status-processing {
+  background: rgba(99,102,241,.15);
+  color: var(--accent);
+}
+.queue-status-waiting {
+  background: rgba(250,204,21,.1);
+  color: #facc15;
+}

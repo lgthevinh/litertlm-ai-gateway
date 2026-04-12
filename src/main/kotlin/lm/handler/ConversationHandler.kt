@@ -164,6 +164,9 @@ class ConversationHandler(
     /** Returns the current number of tasks queued + in progress on the engine. */
     fun getQueueSize(): Int = engineHandler.getQueueSize()
 
+    /** Returns an ordered snapshot of the queue with conversation names, positions, and statuses. */
+    fun getQueueEntries(): List<QueueEntry> = engineHandler.getQueueEntries()
+
     /**
      * Submits [message] to the conversation identified by [name].
      *
@@ -198,7 +201,7 @@ class ConversationHandler(
 
         // 4. Launch detached inference — survives WS disconnect
         inferenceScope.launch {
-            val task = ConversationTask(config = config, message = message)
+            val task = ConversationTask(convName = name, config = config, message = message)
 
             engineHandler.submit(task).collect { chunk ->
                 when (chunk) {

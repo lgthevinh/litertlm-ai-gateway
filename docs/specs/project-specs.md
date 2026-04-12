@@ -64,13 +64,15 @@ litertlm-ai-gateway/
     │       ├── RouteConversation.kt# GET|POST /conversations, GET|POST|DELETE /{name}/messages
     │       ├── RouteWebSocket.kt   # WS /ws/conversations/{name}
     │       ├── RouteApiKey.kt      # POST /api-key/generate, GET /list|info, DELETE /revoke
-    │       ├── RouteConfig.kt      # Static UI + GET /api/tools
+    │       ├── RouteConfig.kt      # Static UI + GET /api/tools + GET /api/queue
     │       ├── RouteExtensions.kt  # respondJson() extension for ApplicationCall
     │       └── dto/
     │           ├── RouteDtoAuth.kt         # LoginRequest/Response, RefreshRequest, ...
     │           ├── RouteDtoAppKey.kt       # GenerateKeyRequest/Response, ApiKeyInfo, ...
     │           ├── RouteDtoConversation.kt # CreateConversationRequest/Response, SendMessage,
     │           │                           # GetMessages, StoredMessageDto, ToolDto, ...
+    │           ├── RouteDtoWebSocket.kt    # WsIncomingMessage, WsQueuedFrame, WsBusyFrame,
+    │           │                           # WsTokenFrame, WsDoneFrame, WsErrorFrame
     │           └── RouteDtoCommon.kt       # OkResponse, ApiErrorResponse
     │
     ├── auth/
@@ -88,10 +90,10 @@ litertlm-ai-gateway/
     │   │   ├── LMStoredConversation.kt  # @DaoTable lm_conversations
     │   │   └── LMStoredMessage.kt       # @DaoTable lm_messages
     │   ├── handler/
-    │   │   ├── WsChunk.kt               # sealed class: Token, Done, Error
+    │   │   ├── WsChunk.kt               # sealed class: Token, Done, Error, Queued, Busy
     │   │   ├── ConversationHandler.kt   # Orchestrator: lifecycle + sendMessage flow
     │   │   ├── MessageHandler.kt        # DB persistence + buildConfig (with tool wiring)
-    │   │   └── EngineHandler.kt         # Fixed 2-engine pool + task queue
+    │   │   └── EngineHandler.kt         # Single engine, dedicated thread, task queue + queue visibility
     │   └── tool/
     │       ├── GatewayTool.kt           # interface: descriptor + execute(JsonObject): Any?
     │       ├── GatewayToolProvider.kt   # extends ToolProvider — bridges to InternalJsonTool
@@ -121,6 +123,7 @@ litertlm-ai-gateway/
 |--------|------|-------------|
 | GET | `/` | Serves the web UI (`index.html`) |
 | GET | `/api/tools` | List all registered tools and their schemas |
+| GET | `/api/queue` | Live inference queue (conversation names, positions, statuses) |
 | POST | `/api/auth/login` | Login → `{ accessToken, refreshToken }` |
 | POST | `/api/auth/refresh` | Rotate tokens → new `{ accessToken, refreshToken }` |
 | POST | `/api/auth/logout` | Revoke refresh token |
@@ -291,9 +294,13 @@ lm_application/
 - [x] Four builtin conversation presets (ASSISTANT, CODER, CONCISE, CREATIVE)
 - [x] Custom system instruction per conversation
 - [x] Dual-auth on conversation routes (JWT or API key)
-- [x] WebSocket streaming inference (`/ws/conversations/{name}`)
+- [x] WebSocket streaming inference (`/ws/conversations/{name}`) with live token streaming
 - [x] REST blocking inference (`POST /conversations/{name}/messages`)
-- [x] Fixed 2-engine pool with shared task queue (concurrent request handling)
+- [x] Single-engine architecture with dedicated thread (native thread affinity)
+- [x] Serialized task queue with live queue visibility (conversation names + positions)
+- [x] Queue position notification to WS clients (queued frame before busy)
+- [x] Detached inference — survives WS disconnect, client reconnects mid-stream or after
+- [x] Token streaming via MutableSharedFlow (non-blocking, no thread boundary issues)
 - [x] Tool execution framework — native `automaticToolCalling` via LiteRTLM SDK
 - [x] Built-in tools: `datetime`, `calculator`
 - [x] Tool binding per conversation (stored in DB, resolved at inference time)
@@ -301,7 +308,7 @@ lm_application/
 - [x] `.env` file support with environment variable override
 - [x] SQLite persistence via `DaoSqlite` (HikariCP pool)
 - [x] Structured logging via `ILog` / `ILogImpl`
-- [x] Web UI (SPA — conversations, API keys, API docs with tool section)
+- [x] Web UI (SPA — conversations with live streaming, API keys, queue monitor, API docs with tool section)
 
 ## Planned Features
 

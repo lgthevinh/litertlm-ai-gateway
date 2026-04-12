@@ -42,13 +42,23 @@ fun Route.config() {
             call.respondJson(JsonUtils.toJson(response))
         }
 
-        // GET /api/queue — current inference queue size (public, no auth)
-        // Returns { "ok": true, "size": 0 }
+        // GET /api/queue — current inference queue (public, no auth)
+        // Returns { "ok": true, "size": 2, "queue": [{ "name": "...", "position": 1, "status": "processing" }, ...] }
         get("/queue") {
-            val size = LMService.conversationHandler?.getQueueSize() ?: 0
+            val handler = LMService.conversationHandler
+            val entries = handler?.getQueueEntries() ?: emptyList()
+            val arr = JsonArray()
+            entries.forEach { entry ->
+                arr.add(JsonObject().apply {
+                    addProperty("name", entry.name)
+                    addProperty("position", entry.position)
+                    addProperty("status", entry.status)
+                })
+            }
             val response = JsonObject().apply {
                 addProperty("ok", true)
-                addProperty("size", size)
+                addProperty("size", entries.size)
+                add("queue", arr)
             }
             call.respondJson(JsonUtils.toJson(response))
         }

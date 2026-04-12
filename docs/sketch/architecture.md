@@ -29,7 +29,7 @@
 |  +----------v----------------------------------v---------------------+  |
 |  |                        Route Layer                                |  |
 |  |  /api/auth/*           /api/conversations/*   /api/api-key/*     |  |
-|  |  /ws/conversations/*   / (static UI)                             |  |
+|  |  /ws/conversations/*   /api/queue             / (static UI)      |  |
 |  +----------+----------------------------------------------------+--+  |
 |             |                                                     |     |
 |  +----------v--------------------------------------------------+  |     |
@@ -44,8 +44,8 @@
 |  |  +--------v----------------------v-+                        |  |     |
 |  |  |        EngineHandler            |                        |  |     |
 |  |  |  taskChannel: Channel<Task>     |                        |  |     |
-|  |  |  worker #0 ── Engine #0         |                        |  |     |
-|  |  |  worker #1 ── Engine #1         |                        |  |     |
+|  |  |  queueNames: ConcurrentDeque    |                        |  |     |
+|  |  |  worker ── Engine (1 thread)    |                        |  |     |
 |  |  +---------------------------------+                        |  |     |
 |  +-------------------------------------------------------------+  |     |
 |                                                                    |     |
@@ -61,38 +61,51 @@
 
 ```
 Client connects: WS /ws/conversations/{name}?token=...
-    │
-    ├─ DualAuthPlugin validates token (JWT or API key)
-    ├─ Engine ready check (503 if LMService.conversationHandler == null)
-    │
-    │  [message loop — connection stays open for full conversation lifetime]
-    │
+    |
+    |-- DualAuthPlugin validates token (JWT or API key)
+    |-- Engine ready check (503 if LMService.conversationHandler == null)
+    |
+    |  [message loop — connection stays open for full conversation lifetime]
+    |
     Client sends: { "message": "Hello" }
-    │
-    ▼
+    |
+    v
 ConversationHandler.sendMessage(name, message): Flow<WsChunk>
-    │
-    ├─ MessageHandler.buildConfig(name)
-    │    ├─ getConversation(name)   → LMStoredConversation  (config + sampler)
-    │    └─ loadHistory(name)       → List<Message>  (last 40, ordered by seq)
-    │         └─ ConversationConfig(systemInstruction, initialMessages, samplerConfig)
-    │
-    ├─ ConversationTask(config, message) enqueued to EngineHandler.taskChannel
-    │    └─ suspends until a worker picks it up (queues if both busy)
-    │
-    Worker #N picks task:
-    ├─ engine.createConversation(config)   — transient native object
-    ├─ conversation.sendMessageAsync(message)
-    │    ├─ WsChunk.Token  → emit to flow → WS frame { "type": "token", "token": "..." }
-    │    ├─ WsChunk.Token  → ...
-    │    └─ (inference complete)
-    ├─ WsChunk.Done emitted
-    │    └─ ConversationHandler persists user + model messages via MessageHandler
-    │         appendMessages(name, userText, modelText, nextSeq)
-    ├─ conversation.close()     — frees engine resources
-    │
-    WS frame: { "type": "done" }
-    │
+    |
+    |-- MessageHandler.buildConfig(name)
+    |    |-- getConversation(name)   -> LMStoredConversation  (config + sampler)
+    |    +-- loadHistory(name)       -> List<Message>  (last 40, ordered by seq)
+    |         +-- ConversationConfig(systemInstruction, initialMessages, samplerConfig)
+    |
+    |-- ConversationJobRegistry.startJob(name)  -> BUSY
+    |
+    |-- launch detached coroutine:
+    |    ConversationTask(convName, config, message) enqueued to EngineHandler.taskChannel
+    |        +-- queueNames.addLast(convName)
+    |        +-- suspends until worker picks it up (queues if busy)
+    |
+    |-- if queueSize > 0: emit Queued(position)
+    +-- emit Busy
+    |
+    Worker picks up task (on dedicated engine-thread):
+    |-- engine.createConversation(config)   -- transient native object
+    |-- conversation.sendMessageAsync(message)
+    |    |-- Token -> task.reply channel -> onToken() -> replyBuffer + tokenFlow.tryEmit()
+    |    +-- (inference complete)
+    |-- WsChunk.Done emitted
+    |    +-- ConversationHandler persists user + model messages via MessageHandler
+    |-- conversation.close()     -- frees engine resources
+    |-- queueNames.pollFirst()   -- remove from visible queue
+    |
+    v
+    WS handler:
+    |-- { "type": "queued", "position": N }  (if task was queued)
+    |-- { "type": "busy" }
+    |-- launch { tokenFlow.collect -> { "type": "token", "token": "..." } }
+    |-- deferred.await()
+    |-- tokenJob.cancelAndJoin()
+    +-- { "type": "done", "reply": "..." }
+    |
     [client sends next message — same WS connection, new inference cycle]
 ```
 
@@ -126,7 +139,7 @@ org.thingai.app.aigateway/
 │   │
 │   └── route/
 │       ├── Route.kt                     # Route registration
-│       ├── RouteConfig.kt              # Static UI serving
+│       ├── RouteConfig.kt              # Static UI serving + GET /api/tools + GET /api/queue
 │       ├── RouteAuth.kt                # POST /auth/login|refresh|logout
 │       ├── RouteConversation.kt        # GET|POST /conversations, GET|POST|DELETE /{name}/messages
 │       ├── RouteApiKey.kt              # POST /api-key/generate, GET /list|info, DELETE /revoke
@@ -136,7 +149,8 @@ org.thingai.app.aigateway/
 │           ├── RouteDtoAuth.kt         # LoginRequest/Response, RefreshRequest/Response, LogoutRequest
 │           ├── RouteDtoConversation.kt # CreateConversation*, ListConversations*, GetMessages*, SendMessage*
 │           ├── RouteDtoAppKey.kt       # GenerateKey*, ListKeys*, RevokeKey*, KeyInfo*
-│           └── RouteDtoWebSocket.kt    # WsIncomingMessage, WsTokenFrame, WsDoneFrame, WsErrorFrame
+│           └── RouteDtoWebSocket.kt    # WsIncomingMessage, WsQueuedFrame, WsBusyFrame,
+│                                      # WsTokenFrame, WsDoneFrame, WsErrorFrame
 │
 ├── auth/
 │   ├── LMApiKey.kt                     # @DaoTable entity: id, keyHash, keyPrefix, name, active, timestamps
@@ -149,13 +163,13 @@ org.thingai.app.aigateway/
 │   │                                   # Constructs and owns: EngineHandler, MessageHandler, ConversationHandler
 │   │
 │   ├── handler/
-│   │   ├── WsChunk.kt                  # sealed class: Token(text), Done, Error(message)
+│   │   ├── WsChunk.kt                  # sealed class: Token(text), Done, Error(message), Queued(position), Busy
 │   │   ├── ConversationHandler.kt      # createConversation, deleteConversation, listConversations,
 │   │   │                               # hasConversation, getHistory, sendMessage → Flow<WsChunk>
 │   │   ├── MessageHandler.kt           # saveConversation, getConversation, listConversations,
 │   │   │                               # deleteConversation, appendMessages, nextSeq,
 │   │   │                               # getHistory, buildConfig
-│   │   └── EngineHandler.kt            # ENGINE_COUNT=2, taskChannel, launchWorker, submit, processTask
+│   │   └── EngineHandler.kt            # Single engine, dedicated thread, task queue, QueueEntry
 │   │
 │   ├── entity/
 │   │   ├── LMStoredConversation.kt     # @DaoTable lm_conversations: name(PK), systemInstruction,
@@ -316,13 +330,17 @@ listConversations()        → messageHandler.listConversations()
 getHistory(name)           → messageHandler.getHistory(name)  [for GET /messages API]
 
 sendMessage(name, message): Flow<WsChunk>
-    1. messageHandler.buildConfig(name)           → null → emit Error, return
-    2. ConversationTask(config, message) created
-    3. engineHandler.submit(task)                 → Flow<WsChunk> (queues if busy)
-    4. collect:
-         Token  → accumulate to replyBuffer + emit
-         Done   → appendMessages(name, message, replyBuffer, nextSeq) + emit Done
-         Error  → emit Error (no persistence — incomplete reply discarded)
+    1. messageHandler.buildConfig(name)           -> null -> emit Error, return
+    2. Guard: isBusy(name)                        -> true -> emit Error("busy"), return
+    3. ConversationJobRegistry.startJob(name)     -> BUSY
+    4. launch detached coroutine:
+         ConversationTask(convName, config, message) -> engineHandler.submit()
+         collect:
+           Token  -> onToken(name, text): replyBuffer + tokenFlow.tryEmit
+           Done   -> appendMessages(name, message, replyBuffer, nextSeq) + onDone()
+           Error  -> onError(name, reason)
+    5. if queueSize > 0: emit Queued(position)
+    6. emit Busy
 ```
 
 #### Key design decisions
@@ -334,54 +352,64 @@ sendMessage(name, message): Flow<WsChunk>
 
 ---
 
-### 3.3 Engine Pool Architecture `[IMPLEMENTED]`
+### 3.3 Engine Architecture `[IMPLEMENTED]`
 
-#### EngineHandler — fixed 2-engine pool with task queue
+#### EngineHandler — single engine with dedicated thread and task queue
 
 ```kotlin
 class EngineHandler(engineConfig: EngineConfig) {
-    companion object { const val ENGINE_COUNT = 2 }
 
     private val taskChannel = Channel<ConversationTask>(Channel.UNLIMITED)
-    private val engines     = mutableListOf<Engine>()
-    private val scope       = CoroutineScope(Dispatchers.Default)
+    private val queueNames  = ConcurrentLinkedDeque<String>()
+    private val engineThread = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "engine-thread").also { it.isDaemon = true }
+    }.asCoroutineDispatcher()
+    private val scope  = CoroutineScope(engineThread)
+    private var engine: Engine? = null
 }
 
 data class ConversationTask(
+    val convName: String,
     val config: ConversationConfig,
     val message: String,
     val reply: Channel<WsChunk> = Channel(Channel.UNLIMITED)
+)
+
+data class QueueEntry(
+    val name: String,       // conversation name
+    val position: Int,      // 1-based (1 = processing)
+    val status: String      // "processing" | "waiting"
 )
 ```
 
 **Startup (`start`):**
 ```
-repeat(ENGINE_COUNT):
-    engine = Engine(engineConfig)
-    engine.initialize()             // blocking — loads model weights
-    engines.add(engine)
-    launchWorker(index, engine)     // one coroutine per engine
-onReady(true)
-```
-
-**Worker loop:**
-```kotlin
-for (task in taskChannel) {   // suspends when queue empty; picks next task when free
-    processTask(index, engine, task)
+scope.launch {  // runs on engine-thread
+    engine = Engine(engineConfig).also { it.initialize() }
+    launchWorker()
+    onReady(true)
 }
 ```
 
-**processTask:**
+**Worker loop (runs on engine-thread):**
+```kotlin
+for (task in taskChannel) {
+    processTask(engine, task)
+    queueNames.pollFirst()   // remove from visible queue
+}
+```
+
+**processTask (runs on engine-thread — same thread as init):**
 ```
 conversation = engine.createConversation(task.config)
-    └─ includes initialMessages (history replay)
+    +-- includes initialMessages (history replay)
 
 conversation.sendMessageAsync(task.message)
-    .catch { e →
+    .catch { e ->
         task.reply.send(WsChunk.Error(...))
         inferenceError = true
     }
-    .collect { token → task.reply.send(WsChunk.Token(token.toString())) }
+    .collect { token -> task.reply.send(WsChunk.Token(token.toString())) }
 
 if (!inferenceError) task.reply.send(WsChunk.Done)
 
@@ -392,17 +420,29 @@ finally:
 
 **submit(task): Flow<WsChunk>**
 ```
-taskChannel.send(task)     // enqueue — never blocks (UNLIMITED channel)
-for (chunk in task.reply): // suspends here until worker closes reply channel
+queueNames.addLast(task.convName)    // track in visible queue
+taskChannel.send(task)               // enqueue — never blocks (UNLIMITED channel)
+for (chunk in task.reply):           // suspends here until worker closes reply channel
     emit(chunk)
-    if chunk is Done or Error → break
+    if chunk is Done or Error -> break
 ```
 
+**Queue visibility:**
+```
+getQueueSize(): Int = queueNames.size
+getQueueEntries(): List<QueueEntry>  // snapshot with position + status
+```
+
+**Thread affinity model:**
+- LiteRTLM native engine requires all operations on the same thread it was initialized on
+- `engine-thread` is a single-thread executor — engine init, createConversation, sendMessageAsync, and close all run here
+- The `scope = CoroutineScope(engineThread)` ensures the worker coroutine is always pinned to this thread
+- No cross-thread engine access — eliminates native `abort()` / core dump risk
+
 **Concurrency model:**
-- Workers compete for tasks naturally via `Channel` fan-out — no explicit scheduling
-- Each worker exclusively owns one `Engine` — zero sharing, zero locking during inference
-- If both workers are busy, callers suspend at `taskChannel.send` until a worker finishes and loops
+- Tasks are serialized — one at a time — via the channel
 - Queue is unbounded — no request is ever rejected; worst-case latency grows with queue depth
+- Queue position is visible via `GET /api/queue` (polled by the UI)
 
 #### LMService — wiring singleton
 
