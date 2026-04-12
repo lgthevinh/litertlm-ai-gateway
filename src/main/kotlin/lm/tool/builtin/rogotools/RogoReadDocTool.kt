@@ -10,12 +10,12 @@ import java.io.File
  *
  * Tool name: `rogo_read_doc`
  *
- * The model should call [RogoListDocsOpenApiTool] first to discover available files,
+ * The model should call [RogoListDocsTool] first to discover available files,
  * then pass the exact filename here.
  *
  * Path traversal is prevented — only plain filenames are accepted.
  */
-class RogoReadDocOpenApiTool : GatewayOpenApiTool {
+class RogoReadDocTool : GatewayOpenApiTool {
 
     override val name = "rogo_read_doc"
 

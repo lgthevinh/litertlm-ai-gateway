@@ -11,7 +11,7 @@ import java.time.format.DateTimeFormatter
  *
  * Tool name: `datetime`
  */
-class DateTimeOpenApiTool : GatewayOpenApiTool {
+class DatetimeTool : GatewayOpenApiTool {
 
     override val name = "datetime"
 

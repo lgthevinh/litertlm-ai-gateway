@@ -19,7 +19,7 @@ import org.thingai.base.log.ILog
  *
  */
 
-class LMServiceOpenApiTool : GatewayOpenApiTool {
+class LMServiceTool : GatewayOpenApiTool {
 
     override val name = "litertlm-docs"
 
@@ -131,7 +131,7 @@ class LMServiceOpenApiTool : GatewayOpenApiTool {
     // Helpers
     // ---------------------------------------------------------------------------
 
-    private fun classLoader() = LMServiceOpenApiTool::class.java.classLoader
+    private fun classLoader() = LMServiceTool::class.java.classLoader
 
     /**
      * Extracts (title, description) from markdown text.
