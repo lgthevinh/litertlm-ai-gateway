@@ -5,12 +5,13 @@ const state = {
   accessToken:  null,
   refreshToken: null,
   username:     null,
-  activeConv:   null,     // currently selected conversation name
-  ws:           null,     // WebSocket instance
-  streaming:    false,    // true while model is generating
-  messages:     {},       // { convName: [{role, text}] }
-  revokeTarget: null,     // prefix of key being revoked
-  editTarget:   null,     // name of conversation being edited
+  activeConv:   null,
+  ws:           null,
+  streaming:    false,
+  messages:     {},
+  revokeTarget: null,
+  editTarget:   null,
+  statelessMap: {},     // { convName: boolean } — populated by renderConvList
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -52,6 +53,11 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('nc-config').addEventListener('change', e => {
     document.getElementById('nc-system-field').style.display =
       e.target.value === 'custom' ? 'block' : 'none';
+  });
+
+  document.getElementById('nc-stateless').addEventListener('change', e => {
+    document.getElementById('nc-stateless-warning').style.display =
+      e.target.checked ? 'block' : 'none';
   });
 
   document.getElementById('ec-config').addEventListener('change', e => {
@@ -129,8 +135,12 @@ function showPage(name) {
   // Reset scroll on every page switch so every page starts at the top
   document.querySelector('main')?.scrollTo({ top: 0 });
 
+  // Stop queue polling when leaving the page
+  stopQueuePolling();
+
   if (name === 'conversations') loadConversations();
   if (name === 'apikeys')       loadApiKeys();
+  if (name === 'queue')         startQueuePolling();
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -144,46 +154,57 @@ async function loadConversations() {
   } catch (_) {}
 }
 
-function renderConvList(names) {
+function renderConvList(convs) {
   const el = document.getElementById('conv-list');
-  if (!names.length) {
+  if (!convs.length) {
     el.innerHTML = '<div class="text-dim" style="font-size:12px;padding:8px 4px;">No conversations yet</div>';
     return;
   }
-  el.innerHTML = names.map(n =>
-    '<div class="conv-item ' + (n === state.activeConv ? 'active' : '') + '" onclick="selectConv(\'' + esc(n) + '\')">' +
-    '<span>' + esc(n) + '</span>' +
-    '<div class="conv-item-actions">' +
-    '<span class="edit-conv" onclick="openEditConvModal(event,\'' + esc(n) + '\')" title="Edit">&#9998;</span>' +
-    '<span class="del-conv"  onclick="deleteConv(event,\'' + esc(n) + '\')"        title="Delete">&times;</span>' +
-    '</div>' +
-    '</div>'
-  ).join('');
+  el.innerHTML = convs.map(c => {
+    const n  = c.name;
+    const sl = c.stateless;
+    return '<div class="conv-item ' + (n === state.activeConv ? 'active' : '') + '" onclick="selectConv(\'' + esc(n) + '\')">' +
+      '<span>' + esc(n) + (sl ? ' <span class="conv-stateless-dot" title="Stateless"></span>' : '') + '</span>' +
+      '<div class="conv-item-actions">' +
+      '<span class="edit-conv" onclick="openEditConvModal(event,\'' + esc(n) + '\')" title="Edit">&#9998;</span>' +
+      '<span class="del-conv"  onclick="deleteConv(event,\'' + esc(n) + '\')"        title="Delete">&times;</span>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+  // Keep stateless map in sync for toolbar badge
+  state.statelessMap = Object.fromEntries(convs.map(c => [c.name, c.stateless]));
 }
 
 function selectConv(name) {
-  if (state.activeConv === name) return;  // already selected — no-op
+  if (state.activeConv === name) return;
 
-  // Reset streaming state from previous conversation before switching
   state.streaming  = false;
   state.activeConv = name;
 
-  document.getElementById('conv-title').textContent  = name;
-  document.getElementById('send-btn').disabled       = true;   // re-enabled when WS connects
-  document.getElementById('chat-input').disabled     = true;
+  document.getElementById('conv-title').textContent = name;
+
+  // Stateless badge
+  const badge = document.getElementById('stateless-badge');
+  if (state.statelessMap && state.statelessMap[name]) {
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+
+  document.getElementById('send-btn').disabled   = true;
+  document.getElementById('chat-input').disabled = true;
   setWsStatus('disconnected');
 
   document.querySelectorAll('.conv-item').forEach(el => {
-    el.classList.toggle('active', el.querySelector('span').textContent === name);
+    el.classList.toggle('active', el.querySelector('span').textContent.trim().startsWith(name));
   });
 
-  // Load history from server if not already in memory, then render and connect WS
-  if (state.messages[name]) {
-    renderMessages(name);
-    connectWs(name);
-  } else {
-    loadMessages(name);
-  }
+  // Clear box immediately so no stale content or leftover streaming bubbles are visible
+  const box = document.getElementById('chat-box');
+  box.innerHTML = '<div class="chat-empty"><strong>LiteRTLM</strong>Loading\u2026</div>';
+
+  // Always reload from server on switch — ensures history is always fresh
+  loadMessages(name);
 }
 
 async function loadMessages(name) {
@@ -320,31 +341,59 @@ function connectWs(name) {
 function handleWsFrame(convName, frame) {
   const box = document.getElementById('chat-box');
 
-  if (frame.type === 'busy') {
-    // Inference running detached — show thinking indicator
+  if (frame.type === 'queued') {
     state.streaming = true;
     document.getElementById('send-btn').disabled   = true;
     document.getElementById('chat-input').disabled = true;
+    showQueuedBubble(box, frame.position);
+    return;
+  }
+
+  if (frame.type === 'busy') {
+    state.streaming = true;
+    document.getElementById('send-btn').disabled   = true;
+    document.getElementById('chat-input').disabled = true;
+    removeQueuedBubble(box);
     showThinkingBubble(box);
     return;
   }
 
+  if (frame.type === 'token') {
+    // First token — swap thinking bubble for streaming bubble
+    const thinking = box.querySelector('.thinking-bubble');
+    if (thinking) {
+      thinking.classList.remove('thinking-bubble');
+      thinking.querySelector('.msg-bubble').classList.remove('thinking');
+      thinking.querySelector('.msg-bubble').textContent = '';
+      thinking.classList.add('streaming-bubble');
+    }
+    const streaming = box.querySelector('.streaming-bubble .msg-bubble');
+    if (streaming) {
+      streaming.textContent += frame.token;
+      box.scrollTop = box.scrollHeight;
+    }
+    return;
+  }
+
   if (frame.type === 'done') {
-    removeThinkingBubble(box);
+    // Remove in-progress bubble — use authoritative reply from done frame
+    const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble');
+    if (inProgress) inProgress.remove();
+
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
     document.getElementById('chat-input').disabled = false;
 
     const reply = frame.reply || '';
-    if (reply) {
-      appendMessage(convName, 'model', reply);
-    }
+    if (reply) appendMessage(convName, 'model', reply);
     document.getElementById('chat-input').focus();
     box.scrollTop = box.scrollHeight;
+    return;
   }
 
   if (frame.type === 'error') {
-    removeThinkingBubble(box);
+    const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble') || box.querySelector('.queued-bubble');
+    if (inProgress) inProgress.remove();
     state.streaming = false;
     document.getElementById('send-btn').disabled   = false;
     document.getElementById('chat-input').disabled = false;
@@ -381,6 +430,23 @@ function sendMessage() {
   document.getElementById('send-btn').disabled   = true;
   document.getElementById('chat-input').disabled = true;
   state.ws.send(JSON.stringify({ message: text }));
+}
+
+// ── Queued bubble helpers ────────────────────────────────────────────
+function showQueuedBubble(box, position) {
+  removeQueuedBubble(box);
+  const empty = box.querySelector('.chat-empty');
+  if (empty) empty.remove();
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg model queued-bubble';
+  wrapper.innerHTML = '<div class="msg-label">Model</div><div class="msg-bubble queued">Queued (#' + position + ')\u2026</div>';
+  box.appendChild(wrapper);
+  box.scrollTop = box.scrollHeight;
+}
+
+function removeQueuedBubble(box) {
+  const bubble = box.querySelector('.queued-bubble');
+  if (bubble) bubble.remove();
 }
 
 // ── Thinking bubble helpers ───────────────────────────────────────────
@@ -424,12 +490,16 @@ function initDocsSectionNav() {
 
 // ── New conversation modal ────────────────────────────────────────────
 function openNewConvModal() {
-  document.getElementById('nc-name').value   = '';
-  document.getElementById('nc-config').value = 'assistant';
-  document.getElementById('nc-system').value = '';
+  document.getElementById('nc-name').value        = '';
+  document.getElementById('nc-config').value      = 'assistant';
+  document.getElementById('nc-system').value      = '';
   document.getElementById('nc-system-field').style.display = 'none';
-  // Uncheck all tool checkboxes
+  document.getElementById('nc-topk').value        = '';
+  document.getElementById('nc-topp').value        = '';
+  document.getElementById('nc-temperature').value = '';
   document.querySelectorAll('#nc-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  document.getElementById('nc-stateless').checked            = false;
+  document.getElementById('nc-stateless-warning').style.display = 'none';
   setAlert(document.getElementById('nc-err'), null);
   document.getElementById('new-conv-modal').classList.add('open');
   setTimeout(() => document.getElementById('nc-name').focus(), 50);
@@ -442,18 +512,27 @@ async function createConversation() {
   const name   = document.getElementById('nc-name').value.trim();
   const config = document.getElementById('nc-config').value;
   const system = document.getElementById('nc-system').value.trim();
+  const topK   = document.getElementById('nc-topk').value.trim();
+  const topP   = document.getElementById('nc-topp').value.trim();
+  const temp   = document.getElementById('nc-temperature').value.trim();
   const errEl  = document.getElementById('nc-err');
   setAlert(errEl, null);
 
   if (!name) { setAlert(errEl, 'Name is required.'); return; }
 
-  // Collect checked tools
   const tools = Array.from(document.querySelectorAll('#nc-tools-row input[type="checkbox"]:checked'))
     .map(cb => cb.value);
 
-  const body = config === 'custom'
-    ? { name, systemInstruction: system || undefined, tools: tools.length ? tools : undefined }
-    : { name, config, tools: tools.length ? tools : undefined };
+  const body = { name, tools: tools.length ? tools : undefined };
+  if (config === 'custom') {
+    if (system) body.systemInstruction = system;
+  } else {
+    body.config = config;
+  }
+  if (topK) body.topK        = parseInt(topK, 10);
+  if (topP) body.topP        = parseFloat(topP);
+  if (temp) body.temperature = parseFloat(temp);
+  if (document.getElementById('nc-stateless').checked) body.stateless = true;
 
   try {
     const res = await authApi('/conversations', 'POST', body);
@@ -623,6 +702,61 @@ async function confirmRevoke() {
     closeRevokeModal();
     await loadApiKeys();
   } catch (e) { setAlert(errEl, e.message); }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Queue
+// ═══════════════════════════════════════════════════════════════════════
+var queuePollTimer = null;
+
+function startQueuePolling() {
+  loadQueue();
+  queuePollTimer = setInterval(loadQueue, 2000);
+}
+
+function stopQueuePolling() {
+  if (queuePollTimer) { clearInterval(queuePollTimer); queuePollTimer = null; }
+}
+
+async function loadQueue() {
+  try {
+    const res = await api('/queue', 'GET');
+    if (!res.ok) return;
+    var size  = res.size || 0;
+    var queue = res.queue || [];
+
+    document.getElementById('queue-size').textContent = size;
+    document.getElementById('queue-engine-status').textContent =
+      size === 0 ? 'Engine idle' : size === 1 ? 'Processing 1 task' : 'Processing 1 task, ' + (size - 1) + ' queued';
+
+    // Update nav badge
+    var badge = document.getElementById('nav-queue-badge');
+    if (size > 0) {
+      badge.textContent = size;
+      badge.style.display = 'inline-flex';
+    } else {
+      badge.style.display = 'none';
+    }
+
+    // Update queue table
+    var tableCard = document.getElementById('queue-table-card');
+    var tbody     = document.getElementById('queue-tbody');
+    if (queue.length > 0) {
+      tableCard.style.display = '';
+      tbody.innerHTML = queue.map(function(entry) {
+        var statusClass = entry.status === 'processing' ? 'queue-status-processing' : 'queue-status-waiting';
+        var statusLabel = entry.status === 'processing' ? 'Processing' : 'Waiting';
+        return '<tr>' +
+          '<td>' + esc(String(entry.position)) + '</td>' +
+          '<td>' + esc(entry.name) + '</td>' +
+          '<td><span class="queue-status-badge ' + statusClass + '">' + statusLabel + '</span></td>' +
+          '</tr>';
+      }).join('');
+    } else {
+      tableCard.style.display = 'none';
+      tbody.innerHTML = '';
+    }
+  } catch (_) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════

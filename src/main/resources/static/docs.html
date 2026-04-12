@@ -103,11 +103,15 @@
     <a href="#docs-auth">Auth</a>
     <a href="#docs-conversations">Conversations</a>
     <a href="#docs-tools">Tools</a>
+    <a href="#docs-queue">Queue</a>
     <a href="#docs-websocket">WebSocket</a>
     <a href="#docs-apikeys">API Keys</a>
 
     <div class="docs-sidebar-section">Reference</div>
     <a href="#docs-errors">Error Responses</a>
+
+    <div class="docs-sidebar-section">Guides</div>
+    <a href="concepts.html">Concepts ↗</a>
   </nav>
 
   <!-- ── Content ──────────────────────────────────────────────────── -->
@@ -369,6 +373,18 @@
               <code>expression</code> (required) — e.g. <code>(3 + 5) * 2</code>, <code>Math.sqrt(16)</code>
             </td>
           </tr>
+          <tr>
+            <td class="monospace">rogo_list_docs</td>
+            <td>Lists all enterprise documents available in the rogodocs directory. Returns name, size, and last-modified date for each file.</td>
+            <td>None</td>
+          </tr>
+          <tr>
+            <td class="monospace">rogo_read_doc</td>
+            <td>Reads the full content of an enterprise document by filename. Call <code>rogo_list_docs</code> first to discover available files.</td>
+            <td>
+              <code>filename</code> (required) — exact filename, e.g. <code>hr-policy.md</code>
+            </td>
+          </tr>
         </tbody>
       </table>
 
@@ -403,6 +419,41 @@ WS /ws/conversations/helper?token=lrtlm_...
       </p>
     </div>
 
+    <!-- Queue -->
+    <div class="card" id="docs-queue">
+      <div class="card-title">Inference Queue</div>
+      <p class="docs-p">
+        The gateway processes inference tasks one at a time on a single engine.
+        When multiple conversations send messages simultaneously, tasks queue and are
+        processed in submission order.
+      </p>
+
+      <div class="docs-endpoint">
+        <span class="docs-method get">GET</span>
+        <span class="docs-path">/api/queue</span>
+      </div>
+      <p class="docs-p">Returns the current queue snapshot — which conversations are processing or waiting, and their positions. No authentication required.</p>
+      <div class="docs-label">Response 200 — engine idle</div>
+      <pre class="docs-pre">{
+  "ok": true,
+  "size": 0,
+  "queue": []
+}</pre>
+      <div class="docs-label">Response 200 — tasks in queue</div>
+      <pre class="docs-pre">{
+  "ok": true,
+  "size": 2,
+  "queue": [
+    { "name": "chat-1", "position": 1, "status": "processing" },
+    { "name": "chat-5", "position": 2, "status": "waiting"    }
+  ]
+}</pre>
+      <p class="docs-p" style="margin-top:12px;">
+        <code>position</code> is 1-based. Position 1 is the conversation currently being processed.
+        The <code>status</code> field is either <code>"processing"</code> or <code>"waiting"</code>.
+      </p>
+    </div>
+
     <!-- WebSocket -->
     <div class="card" id="docs-websocket">
       <div class="card-title">WebSocket — Streaming</div>
@@ -414,26 +465,71 @@ WS /ws/conversations/helper?token=lrtlm_...
         Stream model replies token-by-token over a persistent WebSocket connection.
         Pass your JWT access token or API key as the <code>token</code> query parameter.
         The connection stays open across multiple turns — send a new message after receiving <code>"done"</code>.
+        Inference runs detached — if you disconnect mid-generation, the reply still completes and persists to DB.
       </p>
 
-      <div class="docs-label">Client → Server (send message)</div>
+      <div class="docs-label">Client → Server</div>
       <pre class="docs-pre">{ "message": "What is Kotlin coroutines?" }</pre>
 
-      <div class="docs-label">Server → Client (streaming token)</div>
-      <pre class="docs-pre">{ "type": "token", "token": "Kotlin" }
-{ "type": "token", "token": " coroutines" }
-<span class="docs-comment">// ... one frame per token</span></pre>
+      <div class="docs-label">Server → Client — frame types</div>
+      <table class="key-table" style="margin-top:6px;margin-bottom:16px;">
+        <thead><tr><th>Type</th><th>When</th><th>Fields</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="monospace">queued</td>
+            <td>Engine is busy with another conversation — your task is waiting</td>
+            <td><code>position</code> — 1-based queue position</td>
+          </tr>
+          <tr>
+            <td class="monospace">busy</td>
+            <td>Inference is now running for your message</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td class="monospace">token</td>
+            <td>One partial token streamed from the model</td>
+            <td><code>token</code> — partial text string</td>
+          </tr>
+          <tr>
+            <td class="monospace">done</td>
+            <td>Turn complete — authoritative full reply</td>
+            <td><code>reply</code> — full reply text</td>
+          </tr>
+          <tr>
+            <td class="monospace">error</td>
+            <td>Recoverable error — connection stays open</td>
+            <td><code>error</code> — error message</td>
+          </tr>
+        </tbody>
+      </table>
 
-      <div class="docs-label">Server → Client (turn complete)</div>
-      <pre class="docs-pre">{ "type": "done" }</pre>
+      <div class="docs-label">Example — engine free (no queue)</div>
+      <pre class="docs-pre"><span class="docs-comment">// Client sends:</span>
+{ "message": "Explain binary search" }
 
-      <div class="docs-label">Server → Client (error)</div>
-      <pre class="docs-pre">{ "type": "error", "error": "Conversation 'my-chat' not found" }</pre>
+<span class="docs-comment">// Server responds:</span>
+{ "type": "busy" }
+{ "type": "token", "token": "Binary" }
+{ "type": "token", "token": " search" }
+{ "type": "token", "token": " is..." }
+<span class="docs-comment">// ... one frame per token ...</span>
+{ "type": "done", "reply": "Binary search is a fast algorithm..." }</pre>
 
-      <div class="docs-label" style="margin-top:16px;">Example — JavaScript</div>
+      <div class="docs-label">Example — engine busy (queued)</div>
+      <pre class="docs-pre"><span class="docs-comment">// Server responds immediately with queue position:</span>
+{ "type": "queued", "position": 2 }
+<span class="docs-comment">// Then when it's your turn:</span>
+{ "type": "busy" }
+{ "type": "token", "token": "Binary" }
+<span class="docs-comment">// ...</span>
+{ "type": "done", "reply": "Binary search is a fast algorithm..." }</pre>
+
+      <div class="docs-label">Example — JavaScript client</div>
       <pre class="docs-pre">const ws = new WebSocket(
   'ws://localhost:8080/ws/conversations/my-chat?token=lrtlm_...'
 );
+
+let streamBuffer = '';
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ message: 'Hello!' }));
@@ -441,10 +537,40 @@ ws.onopen = () => {
 
 ws.onmessage = (evt) => {
   const frame = JSON.parse(evt.data);
-  if (frame.type === 'token') process.stdout.write(frame.token);
-  if (frame.type === 'done')  console.log('\n[done]');
-  if (frame.type === 'error') console.error('[error]', frame.error);
+
+  if (frame.type === 'queued') {
+    console.log('Queued at position', frame.position);
+  } else if (frame.type === 'busy') {
+    console.log('Inference running...');
+    streamBuffer = '';
+  } else if (frame.type === 'token') {
+    streamBuffer += frame.token;
+    process.stdout.write(frame.token);   <span class="docs-comment">// live streaming</span>
+  } else if (frame.type === 'done') {
+    console.log('\n[done]', frame.reply); <span class="docs-comment">// authoritative full reply</span>
+  } else if (frame.type === 'error') {
+    console.error('[error]', frame.error);
+  }
 };</pre>
+
+      <div class="docs-label" style="margin-top:16px;">Reconnect behaviour</div>
+      <table class="key-table" style="margin-top:6px;">
+        <thead><tr><th>Scenario</th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Disconnect mid-inference</td>
+            <td>Inference keeps running. Reply persists to DB on completion. Reload history via <code>GET /messages</code>.</td>
+          </tr>
+          <tr>
+            <td>Reconnect while inference running</td>
+            <td>Server sends <code>busy</code>, streams tokens from that point on, then <code>done</code> with full reply.</td>
+          </tr>
+          <tr>
+            <td>Reconnect after inference done</td>
+            <td>No frames sent. Load history via <code>GET /api/conversations/{name}/messages</code>.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
 
     <!-- API Keys -->

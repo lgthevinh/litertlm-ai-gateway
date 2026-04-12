@@ -5,30 +5,44 @@ package org.thingai.app.aigateway.api.route.dto
 /**
  * Request body for creating a new conversation.
  *
- * @param name             Unique conversation name.
+ * @param name              Unique conversation name.
  * @param systemInstruction Custom system prompt. Defaults to the ASSISTANT preset if omitted.
- * @param config           Builtin config preset: "assistant" | "coder" | "concise" | "creative".
- *                         Ignored when [systemInstruction] is provided.
- * @param tools            Optional list of tool names to bind, e.g. ["datetime", "calculator"].
+ * @param config            Builtin config preset: "assistant" | "coder" | "concise" | "creative".
+ *                          Ignored when [systemInstruction] is provided.
+ * @param topK              Sampler top-K.
+ * @param topP              Sampler top-P.
+ * @param temperature       Sampler temperature.
+ * @param tools             Optional list of tool names to bind, e.g. ["datetime", "calculator"].
+ * @param stateless         When true, no history is loaded or persisted. Immutable after creation.
  */
 data class CreateConversationRequest(
     val name: String?,
     val systemInstruction: String?,
     val config: String?,
-    val tools: List<String>?
+    val topK: Int?,
+    val topP: Double?,
+    val temperature: Double?,
+    val tools: List<String>?,
+    val stateless: Boolean?
 )
 
 data class CreateConversationResponse(
     val ok: Boolean,
     val name: String,
-    val config: String
+    val config: String,
+    val stateless: Boolean
 )
 
 // ── GET /conversations  ──────────────────────────────────────────────────────
 
+data class ConversationSummary(
+    val name: String,
+    val stateless: Boolean
+)
+
 data class ListConversationsResponse(
     val ok: Boolean,
-    val conversations: List<String>
+    val conversations: List<ConversationSummary>
 )
 
 // ── GET /conversations/{name}/messages  ──────────────────────────────────────

@@ -7,14 +7,18 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.launch
 import org.thingai.app.aigateway.LMApplication
 import org.thingai.app.aigateway.api.route.dto.WsBusyFrame
 import org.thingai.app.aigateway.api.route.dto.WsDoneFrame
 import org.thingai.app.aigateway.api.route.dto.WsErrorFrame
 import org.thingai.app.aigateway.api.route.dto.WsIncomingMessage
+import org.thingai.app.aigateway.api.route.dto.WsQueuedFrame
+import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
 import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
-import org.thingai.app.aigateway.lm.conversation.ConversationState
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.app.aigateway.utils.JsonUtils
 
@@ -27,13 +31,13 @@ fun Route.conversationWebSocket() {
     // Protocol (text frames, JSON):
     //   Client → Server:  { "message": "Hello" }
     //   Server → Client:  { "type": "busy" }                      (inference running, wait)
-    //                     { "type": "done", "reply": "..." }       (end of turn, full reply)
+    //                     { "type": "token", "token": "..." }      (partial token, streamed)
+    //                     { "type": "done",  "reply": "..." }      (end of turn, full reply)
     //                     { "type": "error", "error": "..." }      (recoverable error)
     //
     // On connect:
     //   IDLE → normal, wait for client message
-    //   BUSY → send busy frame, block until inference completes, send done frame with full reply
-    //   DONE → send done frame with full reply immediately, clear job
+    //   BUSY → send busy, stream tokens in child coroutine, await deferred, send done
     //
     // The connection stays open for the full conversation lifetime.
     // Send another message after receiving "done" to continue the conversation.
@@ -60,34 +64,25 @@ fun Route.conversationWebSocket() {
             return@webSocket
         }
 
-        // ── Resume check — handle BUSY / DONE state on connect ───────────────
-        when (ConversationJobRegistry.getState(name)) {
-            ConversationState.BUSY -> {
-                // Inference is running — notify client then block until done
-                sendJson(WsBusyFrame())
+        // ── Resume check — handle BUSY state on connect ──────────────────────
+        when {
+            ConversationJobRegistry.isBusy(name) -> {
                 val busyJob = ConversationJobRegistry.getBusyJob(name)
                 if (busyJob != null) {
-                    val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
-                    if (reply != null) {
-                        // Job transitioned to DONE — consume it and send the reply
-                        ConversationJobRegistry.consume(name)
-                        sendJson(WsDoneFrame(reply = reply))
-                    } else {
-                        sendError("Inference failed while waiting for result")
+                    sendJson(WsBusyFrame())
+                    // Stream tokens in a child coroutine — does not block incoming loop
+                    val tokenJob = launch {
+                        busyJob.tokenFlow
+                            .takeWhile { !busyJob.completionDeferred.isCompleted }
+                            .collect { sendJson(WsTokenFrame(token = it)) }
                     }
-                }
-                // Fall through to message loop — conversation is now IDLE
-            }
-            ConversationState.DONE -> {
-                // Inference already finished — consume and send reply immediately
-                val reply = ConversationJobRegistry.consume(name)
-                if (reply != null) {
-                    sendJson(WsDoneFrame(reply = reply))
+                    // Await full reply on the main coroutine
+                    val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
+                    tokenJob.cancelAndJoin()
+                    if (reply != null) sendJson(WsDoneFrame(reply = reply))
+                    else sendError("Inference failed while waiting for result")
                 }
                 // Fall through to message loop
-            }
-            ConversationState.IDLE -> {
-                // Nothing pending — proceed normally
             }
         }
 
@@ -111,22 +106,27 @@ fun Route.conversationWebSocket() {
             // Launch detached inference — collect the single Busy/Error signal
             handler.sendMessage(name, message).collect { chunk ->
                 when (chunk) {
+                    is ConversationWsChunk.Queued -> {
+                        sendJson(WsQueuedFrame(position = chunk.position))
+                    }
                     is ConversationWsChunk.Busy -> {
-                        // Inference launched — notify client and block until done
-                        sendJson(WsBusyFrame())
                         val busyJob = ConversationJobRegistry.getBusyJob(name)
                         if (busyJob != null) {
-                            val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
-                            if (reply != null) {
-                                ConversationJobRegistry.consume(name)
-                                sendJson(WsDoneFrame(reply = reply))
-                            } else {
-                                sendError("Inference failed")
+                            sendJson(WsBusyFrame())
+                            // Stream tokens in a child coroutine — does not block collect{}
+                            val tokenJob = launch {
+                                busyJob.tokenFlow
+                                    .takeWhile { !busyJob.completionDeferred.isCompleted }
+                                    .collect { sendJson(WsTokenFrame(token = it)) }
                             }
+                            val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
+                            tokenJob.cancelAndJoin()
+                            if (reply != null) sendJson(WsDoneFrame(reply = reply))
+                            else sendError("Inference failed")
                         }
                     }
                     is ConversationWsChunk.Error -> sendError(chunk.message)
-                    else             -> { /* Token/Done not emitted in detached mode */ }
+                    else -> { /* Token/Done not emitted in detached mode */ }
                 }
             }
         }

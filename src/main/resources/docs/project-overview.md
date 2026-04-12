@@ -1,6 +1,6 @@
 # Project Overview
 
-LiteRTLM AI Gateway is a Kotlin/JVM HTTP gateway that wraps Google AI Edge LiteRTLM for on-device LLM inference. It exposes a REST API for conversation management, authentication, API key management, and tool execution, backed by SQLite persistence.
+LiteRTLM AI Gateway is a Kotlin/JVM HTTP gateway that wraps Google AI Edge LiteRTLM for on-device LLM inference. It exposes a REST + WebSocket API for conversation management, authentication, API key management, and tool execution, backed by SQLite persistence and a web UI.
 
 ---
 
@@ -38,7 +38,14 @@ litertlm-ai-gateway/
     ├── api/plugin/               # AuthPlugin, ApiKeyPlugin, DualAuthPlugin
     ├── api/route/                # All route handlers + DTOs
     ├── auth/                     # JWT auth + API key management
-    ├── lm/                       # LMService, handlers, tools, entities
+    ├── lm/
+    │   ├── LMService.kt          # Engine lifecycle orchestrator
+    │   ├── builtin/              # Built-in conversation presets
+    │   ├── conversation/         # ConversationJob, ConversationJobRegistry,
+    │   │                         # ConversationState, ConversationWsChunk
+    │   ├── entity/               # LMStoredConversation, LMStoredMessage
+    │   ├── handler/              # ConversationHandler, EngineHandler, MessageHandler
+    │   └── tool/                 # GatewayTool interface, ToolRegistry, builtin tools
     ├── callback/                 # RequestCallback interface
     └── utils/                    # EnvConfig, JsonUtils
 ```
@@ -64,9 +71,11 @@ litertlm-ai-gateway/
 | GET | `/api/conversations` | List all conversations |
 | POST | `/api/conversations` | Create conversation |
 | GET | `/api/conversations/{name}/messages` | Fetch message history |
+| GET | `/api/conversations/{name}/state` | Get inference state: `IDLE`, `BUSY`, `DONE` |
 | POST | `/api/conversations/{name}/messages` | Send message → blocking `{ reply }` |
-| DELETE | `/api/conversations/{name}` | Delete conversation |
-| WS | `/ws/conversations/{name}?token=...` | Streaming inference |
+| PATCH | `/api/conversations/{name}` | Update conversation config |
+| DELETE | `/api/conversations/{name}` | Delete conversation and history |
+| WS | `/ws/conversations/{name}?token=...` | WebSocket inference (detached, survives disconnect) |
 
 ### Protected — JWT only (`AuthPlugin`)
 
@@ -119,13 +128,28 @@ lm_application/
 
 - JWT auth (HS256, 15 min access / 7 day refresh, token rotation)
 - API key management (SHA-256 hashed, `lrtlm_` prefix, soft-revoke)
-- Conversation management (create, list, send, delete)
+- Conversation management (create, list, update, delete)
 - Message history persistence and replay (last 40 messages)
 - Four builtin conversation presets: ASSISTANT, CODER, CONCISE, CREATIVE
 - Custom system instruction per conversation
-- WebSocket streaming inference + REST blocking inference
-- Fixed 2-engine pool with shared task queue
+- Configurable sampler params per conversation (top-K, top-P, temperature)
+- Per-conversation tool binding (stored in DB, resolved at inference time)
+- WebSocket inference — detached from WS connection, survives client disconnect
+- REST blocking inference — awaits detached job completion
+- Conversation state tracking: `IDLE` → `BUSY` → `DONE` with watchdog and eviction TTL
+- Fixed 2-engine pool with shared task queue (backpressure via Kotlin Channel)
 - Tool execution framework (`automaticToolCalling` via LiteRTLM SDK)
-- Built-in tools: `datetime`, `calculator`, `docs`
+- Built-in tools: `datetime`, `calculator`, `litertlm-docs`
 - SQLite persistence via `DaoSqlite` (HikariCP pool)
 - Web UI (SPA — conversations, API keys, API docs)
+
+---
+
+## Related Documentation
+
+| Doc | Contents |
+|-----|----------|
+| `conversation-architecture.md` | Concurrent conversation architecture, EngineHandler, ConversationJobRegistry, and all inference flows |
+| `tool-system.md` | Tool interface, ToolRegistry, built-in tools, and how to implement new tools |
+| `api-manual.md` | Full REST + WebSocket API reference with request/response examples |
+| `litertlm-sdk.md` | LiteRTLM SDK integration notes |

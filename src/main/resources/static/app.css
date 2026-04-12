@@ -379,8 +379,39 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 }
 @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
-/* Thinking indicator */
+/* Stateless badge — toolbar */
+.stateless-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  background: rgba(250,204,21,.12);
+  color: #facc15;
+  border: 1px solid rgba(250,204,21,.25);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+/* Stateless dot — conv list item */
+.conv-stateless-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #facc15;
+  margin-left: 5px;
+  vertical-align: middle;
+  opacity: .8;
+  flex-shrink: 0;
+}
 .msg-bubble.thinking {
+  opacity: .7;
+  font-style: italic;
+  color: var(--text-dim);
+}
+.msg-bubble.queued {
   opacity: .7;
   font-style: italic;
   color: var(--text-dim);
@@ -396,6 +427,15 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
   vertical-align: middle;
 }
 @keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .4; transform: scale(.7); } }
+
+/* Blinking cursor while tokens are streaming in */
+.streaming-bubble .msg-bubble::after {
+  content: '▋';
+  display: inline;
+  color: var(--accent);
+  animation: blink-cursor .7s step-end infinite;
+}
+@keyframes blink-cursor { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
 /* ── Markdown inside model bubbles ────────────────────────────────────── */
 .msg-bubble.markdown { white-space: normal; }
@@ -694,4 +734,86 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
 .docs-divider {
   border: none; border-top: 1px solid var(--border);
   margin: 20px 0 0;
+}
+
+/* ── Queue page ──────────────────────────────────────────────────────── */
+.queue-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 0;
+}
+.queue-size-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.queue-size-number {
+  font-size: 48px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+.queue-size-label {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.queue-engine-status {
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--surface2);
+  padding: 6px 14px;
+  border-radius: 6px;
+}
+
+/* Nav queue badge */
+.nav-queue-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+/* Queue table */
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.queue-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text-dim);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.queue-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.queue-table tr:last-child td { border-bottom: none; }
+.queue-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.queue-status-processing {
+  background: rgba(99,102,241,.15);
+  color: var(--accent);
+}
+.queue-status-waiting {
+  background: rgba(250,204,21,.1);
+  color: #facc15;
 }

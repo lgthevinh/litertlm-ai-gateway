@@ -10,7 +10,8 @@
       "Bash(javap -p org/thingai/platform/log/ILogImpl.class)",
       "Bash(python3:*)",
       "Bash(grep:*)",
-      "Bash(./gradlew compileKotlin)"
+      "Bash(./gradlew compileKotlin)",
+      "Bash(./gradlew build:*)"
     ]
   }
 }
