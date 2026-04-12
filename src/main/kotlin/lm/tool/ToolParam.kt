@@ -1,7 +1,7 @@
 package org.thingai.app.aigateway.lm.tool
 
 /**
- * Describes a single parameter accepted by a [GatewayTool].
+ * Describes a single parameter accepted by a [GatewayOpenApiTool].
  *
  * @param name        Parameter name as the model will supply it in the JSON call.
  * @param type        JSON schema type.

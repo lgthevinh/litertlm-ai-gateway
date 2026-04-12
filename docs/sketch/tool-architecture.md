@@ -223,7 +223,7 @@ ConversationHandler persists user + model messages (unchanged)
 ```
 lm/
 └── tool/
-    ├── GatewayTool.kt            interface: descriptor, execute(JsonObject): Any?
+    ├── GatewayOpenApiTool.kt            interface: descriptor, execute(JsonObject): Any?
     ├── GatewayToolProvider.kt    extends ToolProvider — bridges List<GatewayTool>
     │                             to Map<String, InternalJsonTool>
     ├── ToolDescriptor.kt         name, description, parameters: List<ToolParam>
@@ -232,7 +232,7 @@ lm/
     │                             required: Boolean, default: Any?
     ├── ToolParamType.kt          enum: STRING, INT, FLOAT, BOOLEAN, OBJECT
     └── builtin/
-        ├── DateTimeTool.kt       "datetime" — current date/time, optional format param
+        ├── DateTimeOpenApiTool.kt       "datetime" — current date/time, optional format param
         └── CalculatorTool.kt     "calculator" — evaluate a math expression
 ```
 

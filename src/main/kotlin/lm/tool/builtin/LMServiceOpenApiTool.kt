@@ -1,7 +1,7 @@
 package org.thingai.app.aigateway.lm.tool.builtin
 
 import com.google.gson.JsonParser
-import org.thingai.app.aigateway.lm.tool.GatewayTool
+import org.thingai.app.aigateway.lm.tool.GatewayOpenApiTool
 import org.thingai.base.log.ILog
 
 
@@ -19,11 +19,11 @@ import org.thingai.base.log.ILog
  *
  */
 
-class LMServiceTool : GatewayTool {
+class LMServiceOpenApiTool : GatewayOpenApiTool {
 
     override val name = "litertlm-docs"
 
-    private val tag = "LMServiceTool"
+    private val tag = "LMServiceOpenApiTool"
     private val resourceDir = "docs"
 
     /**
@@ -131,7 +131,7 @@ class LMServiceTool : GatewayTool {
     // Helpers
     // ---------------------------------------------------------------------------
 
-    private fun classLoader() = LMServiceTool::class.java.classLoader
+    private fun classLoader() = LMServiceOpenApiTool::class.java.classLoader
 
     /**
      * Extracts (title, description) from markdown text.

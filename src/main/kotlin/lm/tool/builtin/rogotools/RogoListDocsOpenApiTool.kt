@@ -1,6 +1,6 @@
 package org.thingai.app.aigateway.lm.tool.builtin.rogotools
 
-import org.thingai.app.aigateway.lm.tool.GatewayTool
+import org.thingai.app.aigateway.lm.tool.GatewayOpenApiTool
 import org.thingai.base.log.ILog
 
 /**
@@ -9,9 +9,9 @@ import org.thingai.base.log.ILog
  * Tool name: `rogo_list_docs`
  *
  * Returns a JSON array of file entries — name, size in bytes, and last modified
- * timestamp — so the model knows what is available before calling [RogoReadDocTool].
+ * timestamp — so the model knows what is available before calling [RogoReadDocOpenApiTool].
  */
-class RogoListDocsTool : GatewayTool {
+class RogoListDocsOpenApiTool : GatewayOpenApiTool {
 
     override val name = "rogo_list_docs"
 

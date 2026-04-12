@@ -6,10 +6,10 @@ import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
-import org.thingai.app.aigateway.lm.tool.builtin.DateTimeTool
-import org.thingai.app.aigateway.lm.tool.builtin.LMServiceTool
-import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoListDocsTool
-import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoReadDocTool
+import org.thingai.app.aigateway.lm.tool.builtin.DateTimeOpenApiTool
+import org.thingai.app.aigateway.lm.tool.builtin.LMServiceOpenApiTool
+import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoListDocsOpenApiTool
+import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoReadDocOpenApiTool
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
 
@@ -105,10 +105,10 @@ object LMService {
      * Called once after engine initialization succeeds.
      */
     private fun registerBuiltinTools() {
-        ToolRegistry.register(DateTimeTool())
-        ToolRegistry.register(LMServiceTool())
-        ToolRegistry.register(RogoListDocsTool())
-        ToolRegistry.register(RogoReadDocTool())
+        ToolRegistry.register(DateTimeOpenApiTool())
+        ToolRegistry.register(LMServiceOpenApiTool())
+        ToolRegistry.register(RogoListDocsOpenApiTool())
+        ToolRegistry.register(RogoReadDocOpenApiTool())
         ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.listAll().size} tools registered")
     }
 }

@@ -1,6 +1,7 @@
 package org.thingai.app.aigateway.lm.tool
 
 import com.google.ai.edge.litertlm.OpenApiTool
+import com.google.ai.edge.litertlm.ToolSet
 
 /**
  * A gateway-level tool that the model can invoke during inference.
@@ -19,8 +20,11 @@ import com.google.ai.edge.litertlm.OpenApiTool
  * {"error": "missing required parameter 'expression'"}
  * ```
  */
-interface GatewayTool : OpenApiTool {
-
+interface GatewayOpenApiTool : OpenApiTool {
     /** Unique name used to look up this tool in [ToolRegistry]. */
+    val name: String
+}
+
+interface GatewayToolSet : ToolSet {
     val name: String
 }

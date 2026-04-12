@@ -600,7 +600,7 @@ Model generates final answer incorporating search results
 #### Built-in Tools
 
 ```kotlin
-// tool/builtin/DateTimeTool.kt
+// tool/builtin/DateTimeOpenApiTool.kt
 class DateTimeTool : Tool {
     override val descriptor = ToolDescriptor(
         name = "datetime",
