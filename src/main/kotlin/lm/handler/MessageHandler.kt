@@ -29,7 +29,7 @@ class MessageHandler(private val dao: DaoSqlite) {
         private const val TAG = "MessageHandler"
 
         /** Maximum number of messages (user + model combined) passed as initialMessages on re-open. */
-        const val HISTORY_LIMIT = 40
+        const val HISTORY_LIMIT = 20
     }
 
     // ── Conversation lifecycle ────────────────────────────────────────────────

@@ -125,7 +125,7 @@ At the start of every turn, `MessageHandler.buildConfig()` reconstructs the full
 
 ```
 1. Load LMStoredConversation -> system instruction, preset, sampler config, tool names
-2. Load last HISTORY_LIMIT (40) messages -> sorted by seq ascending
+2. Load last HISTORY_LIMIT (10) messages -> sorted by seq ascending
 3. Map to SDK Message objects (user / model roles)
 4. Build ConversationConfig(
        systemInstruction = ...,
@@ -137,8 +137,8 @@ At the start of every turn, `MessageHandler.buildConfig()` reconstructs the full
 
 The engine re-opens a fresh `Conversation` with this config on every turn. This means:
 - History is always DB-authoritative — no in-memory conversation object survives between turns
-- History is capped at 40 messages to bound token consumption and inference latency
-- The 40-message window slides — oldest messages drop off as new ones are added
+- History is capped at 10 messages to bound token consumption and inference latency
+- The 10-message window slides — oldest messages drop off as new ones are added
 
 ---
 

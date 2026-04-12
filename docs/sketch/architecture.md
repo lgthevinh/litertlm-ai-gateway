@@ -74,7 +74,7 @@ ConversationHandler.sendMessage(name, message): Flow<WsChunk>
     |
     |-- MessageHandler.buildConfig(name)
     |    |-- getConversation(name)   -> LMStoredConversation  (config + sampler)
-    |    +-- loadHistory(name)       -> List<Message>  (last 40, ordered by seq)
+    |    +-- loadHistory(name)       -> List<Message>  (last 10, ordered by seq)
     |         +-- ConversationConfig(systemInstruction, initialMessages, samplerConfig)
     |
     |-- ConversationJobRegistry.startJob(name)  -> BUSY
@@ -303,7 +303,7 @@ buildConfig(name)                  → getConversation + loadHistory → Convers
 
 `buildConfig` constructs a `ConversationConfig` ready for engine re-open:
 - `systemInstruction` → `Contents.of(text)` (custom) or from `BuiltinConversationConfig` preset
-- `initialMessages` → last 40 `LMStoredMessage` rows mapped to `Message.user()` / `Message.model()`
+- `initialMessages` → last 10 `LMStoredMessage` rows mapped to `Message.user()` / `Message.model()`
 - `samplerConfig` → `SamplerConfig(topK, topP, temperature)` from stored values
 
 #### BuiltinConversationConfig presets
@@ -346,7 +346,7 @@ sendMessage(name, message): Flow<WsChunk>
 #### Key design decisions
 
 - **No native `Conversation` object is ever stored** — all LiteRTLM state is transient, created and closed inside a single `processTask` call
-- **History replay on every send** — `initialMessages` in `ConversationConfig` carries the last 40 messages, so the model sees context without an open native session
+- **History replay on every send** — `initialMessages` in `ConversationConfig` carries the last 10 messages, so the model sees context without an open native session
 - **Persistence only on success** — if inference errors, neither the user message nor the partial model reply is persisted, keeping history clean
 - **`topP`/`temperature` stored as `Double`** — SQLite REAL maps to JVM `Double`; `Float` fields fail reflection-based DAO deserialization
 

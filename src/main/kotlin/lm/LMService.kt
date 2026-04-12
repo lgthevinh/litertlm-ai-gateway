@@ -6,9 +6,10 @@ import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
-import org.thingai.app.aigateway.lm.tool.builtin.CalculatorTool
 import org.thingai.app.aigateway.lm.tool.builtin.DateTimeTool
 import org.thingai.app.aigateway.lm.tool.builtin.LMServiceTool
+import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoListDocsTool
+import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoReadDocTool
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
 
@@ -105,8 +106,9 @@ object LMService {
      */
     private fun registerBuiltinTools() {
         ToolRegistry.register(DateTimeTool())
-        ToolRegistry.register(CalculatorTool())
         ToolRegistry.register(LMServiceTool())
+        ToolRegistry.register(RogoListDocsTool())
+        ToolRegistry.register(RogoReadDocTool())
         ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.listAll().size} tools registered")
     }
 }

@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Concepts — LiteRTLM Gateway</title>
+  <link rel="stylesheet" href="app.css">
+  <style>
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+
+    .docs-layout { display: flex; min-height: 100vh; }
+
+    .docs-sidebar {
+      width: 200px; flex-shrink: 0;
+      position: sticky; top: 0; height: 100vh; overflow-y: auto;
+      background: var(--surface); border-right: 1px solid var(--border);
+      padding: 28px 0 28px; display: flex; flex-direction: column;
+    }
+    .docs-sidebar-logo {
+      font-size: 13px; font-weight: 700; color: var(--text);
+      padding: 0 20px 20px; border-bottom: 1px solid var(--border);
+      margin-bottom: 12px; letter-spacing: .02em;
+    }
+    .docs-sidebar-logo span { color: var(--accent-h); }
+    .docs-sidebar a {
+      display: block; padding: 7px 20px; font-size: 13px;
+      color: var(--text-dim); text-decoration: none;
+      border-left: 2px solid transparent;
+      transition: color .15s, border-color .15s; cursor: pointer;
+    }
+    .docs-sidebar a:hover  { color: var(--text); border-left-color: var(--border); }
+    .docs-sidebar a.active { color: var(--accent-h); border-left-color: var(--accent); font-weight: 500; }
+    .docs-sidebar-section {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .08em; color: var(--text-dim); padding: 16px 20px 4px;
+    }
+
+    .docs-content {
+      flex: 1; padding: 40px 48px 80px; max-width: 860px; min-width: 0;
+    }
+    .docs-content h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
+    .docs-content .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 32px; }
+    .card[id] { scroll-margin-top: 24px; }
+
+    /* Concept card extras */
+    .concept-def {
+      display: flex; gap: 10px; align-items: baseline;
+      background: var(--surface2); border-radius: 8px;
+      padding: 12px 14px; margin: 14px 0;
+    }
+    .concept-def-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: var(--accent-h); flex-shrink: 0; min-width: 52px;
+    }
+    .concept-def-value { font-size: 13px; color: var(--text); line-height: 1.6; }
+
+    .param-range {
+      display: inline-block; background: rgba(99,102,241,.12);
+      color: var(--accent-h); font-size: 11px; font-weight: 600;
+      border-radius: 4px; padding: 1px 7px; margin-left: 6px;
+    }
+
+    .preset-table th, .preset-table td {
+      padding: 10px 14px; text-align: left;
+      border-bottom: 1px solid var(--border); font-size: 13px;
+    }
+    .preset-table th { color: var(--text-dim); font-weight: 500; }
+    .preset-table tr:last-child td { border-bottom: none; }
+    .preset-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+
+    .tip-box {
+      background: rgba(99,102,241,.07); border: 1px solid rgba(99,102,241,.2);
+      border-radius: 8px; padding: 12px 16px; margin: 14px 0;
+      font-size: 13px; line-height: 1.65; color: var(--text);
+    }
+    .tip-box strong { color: var(--accent-h); }
+
+    .warn-box {
+      background: rgba(250,204,21,.06); border: 1px solid rgba(250,204,21,.2);
+      border-radius: 8px; padding: 12px 16px; margin: 14px 0;
+      font-size: 13px; line-height: 1.65; color: var(--text);
+    }
+    .warn-box strong { color: #facc15; }
+  </style>
+</head>
+<body>
+
+<div class="docs-layout">
+
+  <!-- ── Sidebar ──────────────────────────────────────────────────── -->
+  <nav class="docs-sidebar">
+    <div class="docs-sidebar-logo">LiteRTLM <span>Docs</span></div>
+
+    <div class="docs-sidebar-section">Concepts</div>
+    <a href="#concept-conversations">Conversations</a>
+    <a href="#concept-stateless">Stateless Mode</a>
+    <a href="#concept-history">History Window</a>
+    <a href="#concept-presets">Presets</a>
+    <a href="#concept-temperature">Temperature</a>
+    <a href="#concept-topk">Top-K</a>
+    <a href="#concept-topp">Top-P</a>
+    <a href="#concept-sampling">Sampling Together</a>
+    <a href="#concept-tools">Tools</a>
+    <a href="#concept-queue">Inference Queue</a>
+    <a href="#concept-rogodocs">Rogo Docs</a>
+
+    <div class="docs-sidebar-section">Reference</div>
+    <a href="docs.html">API Reference ↗</a>
+  </nav>
+
+  <!-- ── Content ──────────────────────────────────────────────────── -->
+  <div class="docs-content" id="docs-content">
+
+    <h1>Concepts</h1>
+    <p class="subtitle">Understand the key ideas behind LiteRTLM Gateway before building with it.</p>
+
+    <!-- Conversations -->
+    <div class="card" id="concept-conversations">
+      <div class="card-title">Conversations</div>
+      <p class="docs-p">
+        A <strong>conversation</strong> is the primary entity in the gateway. It holds configuration
+        (system instruction, sampler settings, tools) and a message history. Every conversation
+        has a unique name you choose at creation time.
+      </p>
+      <p class="docs-p">
+        Each inference turn consists of exactly one user message and one model reply. The full
+        history is replayed into the model at the start of every turn so it has context — but the
+        engine itself holds no persistent state between turns. Every turn creates a fresh native
+        <code>Conversation</code> object, uses it, and destroys it.
+      </p>
+      <div class="tip-box">
+        <strong>Key insight:</strong> The gateway is the memory. The model engine is stateless.
+        History lives in SQLite and is injected fresh on every request.
+      </div>
+    </div>
+
+    <!-- Stateless mode -->
+    <div class="card" id="concept-stateless">
+      <div class="card-title">Stateless Mode</div>
+      <p class="docs-p">
+        By default, conversations are <strong>stateful</strong> — every turn is persisted to the
+        database and replayed as history on the next turn. The model remembers what was said earlier
+        in the conversation.
+      </p>
+      <p class="docs-p">
+        In <strong>stateless mode</strong>, messages are <em>never saved</em>. Each turn is treated
+        as a completely fresh context — the model has no memory of previous turns.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Stateful</div>
+        <div class="concept-def-value">Messages persisted to DB. History replayed on every turn. Model remembers the conversation.</div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Stateless</div>
+        <div class="concept-def-value">Messages never saved. Each turn is independent. Model has no memory between turns.</div>
+      </div>
+      <div class="warn-box">
+        <strong>⚠ Warning:</strong> Stateless conversations cannot be resumed. There is no history to load.
+        Use stateless mode for one-shot queries, automated pipelines, or when privacy requires no persistence.
+      </div>
+      <p class="docs-p">Enable stateless mode at conversation creation via the UI checkbox or the API:</p>
+      <pre class="docs-pre">POST /api/conversations
+{
+  "name":      "ephemeral-query",
+  "config":    "assistant",
+  "stateless": true
+}</pre>
+    </div>
+
+    <!-- History window -->
+    <div class="card" id="concept-history">
+      <div class="card-title">History Window</div>
+      <p class="docs-p">
+        The gateway does not replay the entire conversation history on every turn — only the
+        <strong>last 10 messages</strong> (5 user + 5 model turns) are included. This is the
+        <em>history window</em>.
+      </p>
+      <p class="docs-p">
+        The window slides as new messages arrive — older messages fall off. This keeps inference
+        latency predictable and bounds the token count sent to the model regardless of how long
+        the conversation has been running.
+      </p>
+      <div class="tip-box">
+        <strong>Practical effect:</strong> In a very long conversation, the model may "forget"
+        things discussed many turns ago. If long-term memory matters, consider using a tool
+        (e.g. <code>rogo_read_doc</code>) to inject relevant information rather than relying
+        on conversation history alone.
+      </div>
+    </div>
+
+    <!-- Presets -->
+    <div class="card" id="concept-presets">
+      <div class="card-title">Presets</div>
+      <p class="docs-p">
+        Presets are named bundles of sampler settings and system instructions tuned for a
+        specific use case. They are shortcuts — instead of specifying temperature, topK, and
+        topP manually, you pick a preset that has sensible defaults for the task.
+      </p>
+      <table class="preset-table">
+        <thead>
+          <tr><th>Preset</th><th>Top-K</th><th>Top-P</th><th>Temperature</th><th>Best for</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="monospace">assistant</td>
+            <td>40</td><td>0.95</td><td>0.8</td>
+            <td>General-purpose Q&amp;A, everyday chat</td>
+          </tr>
+          <tr>
+            <td class="monospace">coder</td>
+            <td>10</td><td>0.90</td><td>0.3</td>
+            <td>Code generation, technical explanations — low variance, deterministic</td>
+          </tr>
+          <tr>
+            <td class="monospace">concise</td>
+            <td>10</td><td>0.85</td><td>0.2</td>
+            <td>Brief factual answers, summaries — minimal elaboration</td>
+          </tr>
+          <tr>
+            <td class="monospace">creative</td>
+            <td>80</td><td>0.98</td><td>1.2</td>
+            <td>Storytelling, brainstorming — high variance, surprising output</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="docs-p" style="margin-top:14px;">
+        You can override individual parameters (topK, topP, temperature) when creating a
+        conversation to tune a preset further. A custom system instruction sets the preset
+        label to <code>custom</code>.
+      </p>
+    </div>
+
+    <!-- Temperature -->
+    <div class="card" id="concept-temperature">
+      <div class="card-title">Temperature</div>
+      <p class="docs-p">
+        Temperature controls how <strong>random</strong> the model's token selection is.
+        At each step, the model assigns a probability to every possible next token.
+        Temperature scales those probabilities before sampling.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Low <span class="param-range">0.1 – 0.4</span></div>
+        <div class="concept-def-value">
+          Probabilities are sharpened — the highest-probability token wins almost every time.
+          Output is predictable, consistent, and repetitive. Good for code, factual answers.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Medium <span class="param-range">0.6 – 0.9</span></div>
+        <div class="concept-def-value">
+          Balanced. The model follows likely paths but occasionally picks interesting alternatives.
+          Good for general conversation.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">High <span class="param-range">1.0 – 1.5+</span></div>
+        <div class="concept-def-value">
+          Probabilities are flattened — unlikely tokens get a real chance. Output is varied,
+          surprising, and sometimes incoherent. Good for creative writing, brainstorming.
+        </div>
+      </div>
+      <div class="warn-box">
+        <strong>⚠ Note:</strong> Very high temperatures (&gt; 1.5) can cause the model to produce
+        nonsensical output. Keep it below 1.2 unless experimenting.
+      </div>
+    </div>
+
+    <!-- Top-K -->
+    <div class="card" id="concept-topk">
+      <div class="card-title">Top-K</div>
+      <p class="docs-p">
+        Top-K limits the model's token selection to the <strong>K most probable next tokens</strong>
+        at each step. All tokens outside the top K are discarded — their probability is set to zero —
+        before sampling.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Low K <span class="param-range">5 – 15</span></div>
+        <div class="concept-def-value">
+          Very narrow selection. The model stays close to what it considers most likely.
+          Deterministic and focused. Can feel repetitive.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Medium K <span class="param-range">20 – 50</span></div>
+        <div class="concept-def-value">
+          Balanced vocabulary. The model can choose from a reasonable range of plausible words.
+          Good default.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">High K <span class="param-range">60 – 100</span></div>
+        <div class="concept-def-value">
+          Wide selection pool. The model can pick from many alternatives including less probable ones.
+          More diverse output. Combine with high temperature for maximum creativity.
+        </div>
+      </div>
+    </div>
+
+    <!-- Top-P -->
+    <div class="card" id="concept-topp">
+      <div class="card-title">Top-P (Nucleus Sampling)</div>
+      <p class="docs-p">
+        Top-P (also called <em>nucleus sampling</em>) is an alternative way to limit the token pool.
+        Instead of taking the top K tokens by count, it takes the smallest set of tokens whose
+        <strong>cumulative probability reaches P</strong>.
+      </p>
+      <p class="docs-p">
+        For example, at <code>top_p = 0.9</code>: the model ranks all tokens by probability,
+        then keeps adding them from most to least probable until their combined probability
+        reaches 90%. Only those tokens are considered for sampling.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Low P <span class="param-range">0.7 – 0.85</span></div>
+        <div class="concept-def-value">
+          Tight nucleus. Only the most confident tokens are included. Focused and conservative.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">High P <span class="param-range">0.92 – 0.99</span></div>
+        <div class="concept-def-value">
+          Wide nucleus. More tokens included, including less likely options. More varied output.
+        </div>
+      </div>
+      <div class="tip-box">
+        <strong>Top-P vs Top-K:</strong> Top-K is a fixed count; Top-P is adaptive — it naturally
+        includes more tokens when the model is uncertain (flat distribution) and fewer when it
+        is confident (sharp distribution). Most models use both together.
+      </div>
+    </div>
+
+    <!-- Sampling together -->
+    <div class="card" id="concept-sampling">
+      <div class="card-title">How Sampling Parameters Work Together</div>
+      <p class="docs-p">
+        Temperature, Top-K, and Top-P are applied in sequence on every token generation step:
+      </p>
+      <pre class="docs-pre"><span class="docs-comment">// At each step:</span>
+1. Model computes raw logits for all tokens in vocabulary
+2. Apply temperature  → scale logits (lower = sharper, higher = flatter)
+3. Apply Top-K        → zero out all tokens outside the top K
+4. Apply Top-P        → zero out tokens that fall outside the nucleus
+5. Sample             → pick one token from the remaining distribution</pre>
+      <p class="docs-p" style="margin-top:14px;">
+        In practice, Top-K acts as a hard ceiling on vocabulary size, and Top-P then trims
+        it further based on cumulative probability. Temperature controls how aggressively
+        the model favors its top choices within that pool.
+      </p>
+      <table class="preset-table" style="margin-top:8px;">
+        <thead><tr><th>Goal</th><th>Temperature</th><th>Top-K</th><th>Top-P</th></tr></thead>
+        <tbody>
+          <tr><td>Maximum determinism</td><td>0.1 – 0.3</td><td>5 – 10</td><td>0.8 – 0.85</td></tr>
+          <tr><td>Balanced general use</td><td>0.7 – 0.9</td><td>30 – 50</td><td>0.92 – 0.95</td></tr>
+          <tr><td>Maximum creativity</td><td>1.0 – 1.3</td><td>60 – 100</td><td>0.96 – 0.99</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Tools -->
+    <div class="card" id="concept-tools">
+      <div class="card-title">Tools</div>
+      <p class="docs-p">
+        Tools let the model call server-side functions during inference. When the model decides
+        it needs external information (e.g. the current time, a calculation result, or a document),
+        it emits a tool call. The gateway intercepts it, runs the tool, and returns the result
+        to the model — all before any token reaches the client.
+      </p>
+      <p class="docs-p">
+        From the client's perspective, the reply just arrives as normal streaming tokens.
+        Tool calls are completely transparent.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Binding</div>
+        <div class="concept-def-value">
+          Tools are bound at conversation creation time via the <code>tools</code> array.
+          A conversation can only use tools that were bound when it was created.
+          The tool list is stored in the DB and applied on every inference turn.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Execution</div>
+        <div class="concept-def-value">
+          Tool calls happen inside the LiteRTLM SDK's <code>automaticToolCalling</code> loop —
+          the model may call multiple tools in a single turn before generating its final answer.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Errors</div>
+        <div class="concept-def-value">
+          If a tool fails, the error message is returned to the model as the tool result.
+          The model reads it and responds accordingly — tool errors never crash inference.
+        </div>
+      </div>
+      <div class="tip-box">
+        <strong>When to bind tools:</strong> Only bind tools the model actually needs for that
+        conversation. Unnecessary tools waste context tokens in the system prompt and may confuse
+        the model into calling tools when it shouldn't.
+      </div>
+    </div>
+
+    <!-- Inference queue -->
+    <div class="card" id="concept-queue">
+      <div class="card-title">Inference Queue</div>
+      <p class="docs-p">
+        The gateway runs a <strong>single engine on one dedicated thread</strong>. Only one
+        inference task runs at a time. When multiple conversations send messages simultaneously,
+        tasks queue up and are processed in submission order.
+      </p>
+      <p class="docs-p">
+        This is intentional — running two inferences simultaneously on a single CPU/GPU would
+        slow both down. Serialized execution gives each turn full engine resources and predictable
+        latency.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Queued</div>
+        <div class="concept-def-value">
+          When your message is submitted while the engine is busy, the WebSocket receives a
+          <code>{ "type": "queued", "position": N }</code> frame immediately. The reply will
+          arrive once all tasks ahead in the queue complete.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Detached</div>
+        <div class="concept-def-value">
+          Inference runs detached from the WebSocket connection. If the client disconnects,
+          the inference keeps running and the reply is persisted to the database.
+          The client can reconnect and load the completed reply via <code>GET /messages</code>.
+        </div>
+      </div>
+      <div class="tip-box">
+        <strong>Queue monitor:</strong> The <code>GET /api/queue</code> endpoint (and the Queue tab
+        in the UI) shows live queue state — which conversations are processing or waiting and their positions.
+      </div>
+    </div>
+
+    <!-- Rogo Docs -->
+    <div class="card" id="concept-rogodocs">
+      <div class="card-title">Rogo Docs (Enterprise Documents)</div>
+      <p class="docs-p">
+        The <strong>Rogo Docs</strong> tools (<code>rogo_list_docs</code> and <code>rogo_read_doc</code>)
+        give the model access to files in a designated directory on the server. This is the primary
+        way to feed frequently-updated enterprise documents — policies, onboarding guides, runbooks,
+        product specs — to the model without redeploying.
+      </p>
+      <div class="concept-def">
+        <div class="concept-def-label">Directory</div>
+        <div class="concept-def-value">
+          Files live in <code>./rogodocs/</code> next to the running JAR, or at a custom path
+          set via the <code>ROGO_DOCS_DIR</code> environment variable.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Live reload</div>
+        <div class="concept-def-value">
+          Drop a new file into <code>rogodocs/</code> and it is immediately visible to
+          <code>rogo_list_docs</code>. No restart needed.
+        </div>
+      </div>
+      <div class="concept-def">
+        <div class="concept-def-label">Flow</div>
+        <div class="concept-def-value">
+          The model calls <code>rogo_list_docs</code> to discover what is available,
+          then <code>rogo_read_doc</code> with the exact filename to read the content.
+          The two-step design lets the model decide which document is relevant.
+        </div>
+      </div>
+      <div class="tip-box">
+        <strong>Supported formats:</strong> Any plain-text file — <code>.md</code>, <code>.txt</code>,
+        <code>.json</code>, <code>.yaml</code>, <code>.csv</code>, etc. Binary files (PDFs, images)
+        are listed but their content will not be readable as text.
+      </div>
+      <div class="warn-box">
+        <strong>⚠ Security:</strong> Only bind <code>rogo_list_docs</code> and <code>rogo_read_doc</code>
+        to conversations that should have access to these documents. Path traversal is prevented
+        server-side, but any file placed in <code>rogodocs/</code> is accessible to any conversation
+        with these tools bound.
+      </div>
+    </div>
+
+  </div><!-- /docs-content -->
+</div><!-- /docs-layout -->
+
+<script>
+  const sections = Array.from(document.querySelectorAll('.card[id]'));
+  const links    = Array.from(document.querySelectorAll('.docs-sidebar a[href^="#"]'));
+
+  function updateActive() {
+    let current = sections[0]?.id ?? null;
+    for (const sec of sections) {
+      if (sec.getBoundingClientRect().top <= 60) current = sec.id;
+    }
+    links.forEach(a => {
+      a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+    });
+  }
+
+  window.addEventListener('scroll', updateActive, { passive: true });
+  updateActive();
+</script>
+</body>
+</html>
