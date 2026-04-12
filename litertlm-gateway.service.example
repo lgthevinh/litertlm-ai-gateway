@@ -1,0 +1,22 @@
+[Unit]
+Description=LiteRTLM AI Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/path/to/litertlm-ai-gateway
+ExecStart=/usr/bin/java -jar /path/to/litertlm-ai-gateway/build/libs/aigateway-1.0-all.jar
+Restart=on-failure
+RestartSec=5
+
+# stdout + stderr both go to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litertlm-gateway
+
+# Load .env file as environment
+EnvironmentFile=/path/to/litertlm-ai-gateway/.env
+
+[Install]
+WantedBy=multi-user.target

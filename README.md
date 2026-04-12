@@ -96,6 +96,32 @@ java -jar build/libs/aigateway-1.0-all.jar
 
 The server starts on `http://0.0.0.0:8080`.
 
+### 4) Run as a Linux service (systemd)
+
+A service unit file is provided at `litertlm-gateway.service`. Before installing, open it and replace:
+
+- `YOUR_USER` — the Linux user to run the process as
+- `/path/to/litertlm-ai-gateway` — absolute path to the project root (appears 3 times)
+- `aigateway-1.0-all.jar` — actual JAR filename if it differs
+
+Then install and start the service:
+
+```bash
+sudo cp litertlm-gateway.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable litertlm-gateway
+sudo systemctl start litertlm-gateway
+```
+
+Check status and follow logs:
+
+```bash
+sudo systemctl status litertlm-gateway
+sudo journalctl -u litertlm-gateway -f
+```
+
+The service reads environment variables directly from your `.env` file and restarts automatically on failure.
+
 ## How to use
 
 ### 1) Log in and get a token
