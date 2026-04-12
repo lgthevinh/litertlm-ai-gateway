@@ -43,7 +43,7 @@ The gateway wraps Google AI Edge LiteRTLM (on-device LLM inference) and provides
 
 ## Supported models (current)
 
-- Model name: gemma4-e4b-it.litertlm, gemma4-e2b-it.litertlm (tested)
+- Model name (tested): gemma4-e4b-it.litertlm, gemma4-e2b-it.litertlm
 - Download: [e4b](https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm), [e2b](https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm)
 
 ## Install and run
