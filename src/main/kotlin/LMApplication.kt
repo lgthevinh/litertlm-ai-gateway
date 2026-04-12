@@ -56,7 +56,7 @@ object LMApplication : Service() {
         LMService.setDao(dao)
         LMService.setEngineConfig(
             EngineConfig(
-                modelPath    = "./model/gemma4-e2b/gemma-4-E2B-it.litertlm",
+                modelPath    = "./model/gemma4-e4b/gemma-4-E4B-it.litertlm",
                 backend      = Backend.CPU(),
                 audioBackend = Backend.CPU(),
             )
