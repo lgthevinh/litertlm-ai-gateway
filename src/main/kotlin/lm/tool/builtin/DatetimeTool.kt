@@ -1,7 +1,7 @@
 package org.thingai.app.aigateway.lm.tool.builtin
 
 import com.google.gson.JsonParser
-import org.thingai.app.aigateway.lm.tool.GatewayTool
+import org.thingai.app.aigateway.lm.tool.GatewayOpenApiTool
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -11,7 +11,7 @@ import java.time.format.DateTimeFormatter
  *
  * Tool name: `datetime`
  */
-class DateTimeTool : GatewayTool {
+class DatetimeTool : GatewayOpenApiTool {
 
     override val name = "datetime"
 

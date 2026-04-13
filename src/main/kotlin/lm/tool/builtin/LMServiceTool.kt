@@ -1,7 +1,7 @@
 package org.thingai.app.aigateway.lm.tool.builtin
 
 import com.google.gson.JsonParser
-import org.thingai.app.aigateway.lm.tool.GatewayTool
+import org.thingai.app.aigateway.lm.tool.GatewayOpenApiTool
 import org.thingai.base.log.ILog
 
 
@@ -19,11 +19,11 @@ import org.thingai.base.log.ILog
  *
  */
 
-class LMServiceTool : GatewayTool {
+class LMServiceTool : GatewayOpenApiTool {
 
     override val name = "litertlm-docs"
 
-    private val tag = "LMServiceTool"
+    private val tag = "LMServiceOpenApiTool"
     private val resourceDir = "docs"
 
     /**

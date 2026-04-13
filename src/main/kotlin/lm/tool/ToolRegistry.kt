@@ -6,7 +6,7 @@ import org.thingai.base.log.ILog
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Global registry of available [GatewayTool] instances.
+ * Global registry of available [GatewayOpenApiTool] instances.
  *
  * Tools are registered at application startup and looked up at config-build time.
  * Thread-safe — backed by [ConcurrentHashMap].
@@ -15,10 +15,10 @@ object ToolRegistry {
 
     private const val TAG = "ToolRegistry"
 
-    private val tools = ConcurrentHashMap<String, GatewayTool>()
+    private val tools = ConcurrentHashMap<String, GatewayOpenApiTool>()
 
     /** Registers a tool. Overwrites any existing tool with the same name. */
-    fun register(tool: GatewayTool) {
+    fun register(tool: GatewayOpenApiTool) {
         tools[tool.name] = tool
         ILog.i(TAG, "register: '${tool.name}' registered")
     }
@@ -30,8 +30,8 @@ object ToolRegistry {
         return removed
     }
 
-    /** Returns a single [GatewayTool] by name, or null if not registered. */
-    fun get(name: String): GatewayTool? = tools[name]
+    /** Returns a single [GatewayOpenApiTool] by name, or null if not registered. */
+    fun get(name: String): GatewayOpenApiTool? = tools[name]
 
     /**
      * Resolves the given names to registered tools and wraps each with the SDK `tool()` function,
@@ -50,8 +50,8 @@ object ToolRegistry {
         }
     }
 
-    /** Returns all registered [GatewayTool] instances sorted by name. */
-    fun listAll(): List<GatewayTool> = tools.values.sortedBy { it.name }
+    /** Returns all registered [GatewayOpenApiTool] instances sorted by name. */
+    fun listAll(): List<GatewayOpenApiTool> = tools.values.sortedBy { it.name }
 
     /** Clears all registered tools. Called on [org.thingai.app.aigateway.engine.LMService.stop]. */
     fun clear() {

@@ -6,7 +6,7 @@ import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
-import org.thingai.app.aigateway.lm.tool.builtin.DateTimeTool
+import org.thingai.app.aigateway.lm.tool.builtin.DatetimeTool
 import org.thingai.app.aigateway.lm.tool.builtin.LMServiceTool
 import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoListDocsTool
 import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoReadDocTool
@@ -105,7 +105,7 @@ object LMService {
      * Called once after engine initialization succeeds.
      */
     private fun registerBuiltinTools() {
-        ToolRegistry.register(DateTimeTool())
+        ToolRegistry.register(DatetimeTool())
         ToolRegistry.register(LMServiceTool())
         ToolRegistry.register(RogoListDocsTool())
         ToolRegistry.register(RogoReadDocTool())

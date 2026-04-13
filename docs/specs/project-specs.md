@@ -95,14 +95,14 @@ litertlm-ai-gateway/
     │   │   ├── MessageHandler.kt        # DB persistence + buildConfig (with tool wiring)
     │   │   └── EngineHandler.kt         # Single engine, dedicated thread, task queue + queue visibility
     │   └── tool/
-    │       ├── GatewayTool.kt           # interface: descriptor + execute(JsonObject): Any?
+    │       ├── GatewayOpenApiTool.kt           # interface: descriptor + execute(JsonObject): Any?
     │       ├── GatewayToolProvider.kt   # extends ToolProvider — bridges to InternalJsonTool
     │       ├── ToolDescriptor.kt        # name, description, parameters + toJsonObject()
     │       ├── ToolParam.kt             # name, type, description, required, default
     │       ├── ToolParamType.kt         # enum: STRING, INT, FLOAT, BOOLEAN, OBJECT
     │       ├── ToolRegistry.kt          # singleton: register, get, getAll, list, clear
     │       └── builtin/
-    │           ├── DateTimeTool.kt      # "datetime" — current date/time
+    │           ├── DateTimeOpenApiTool.kt      # "datetime" — current date/time
     │           └── CalculatorTool.kt    # "calculator" — math expression evaluator
     │
     ├── callback/

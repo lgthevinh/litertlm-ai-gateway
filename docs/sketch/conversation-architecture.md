@@ -410,7 +410,7 @@ lm/
 |-- builtin/
 |   +-- BuiltinConversationConfig.kt # Preset definitions: ASSISTANT, CODER, CONCISE, CREATIVE
 +-- tool/
-    |-- GatewayTool.kt
+    |-- GatewayOpenApiTool.kt
     |-- ToolRegistry.kt
     +-- builtin/                     # DateTimeTool, CalculatorTool, LiteRTLMDocsTool
 ```

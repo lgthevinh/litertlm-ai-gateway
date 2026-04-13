@@ -1,7 +1,7 @@
 package org.thingai.app.aigateway.lm.tool.builtin.rogotools
 
 import com.google.gson.JsonParser
-import org.thingai.app.aigateway.lm.tool.GatewayTool
+import org.thingai.app.aigateway.lm.tool.GatewayOpenApiTool
 import org.thingai.base.log.ILog
 import java.io.File
 
@@ -15,7 +15,7 @@ import java.io.File
  *
  * Path traversal is prevented — only plain filenames are accepted.
  */
-class RogoReadDocTool : GatewayTool {
+class RogoReadDocTool : GatewayOpenApiTool {
 
     override val name = "rogo_read_doc"
 

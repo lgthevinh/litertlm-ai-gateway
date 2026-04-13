@@ -194,15 +194,15 @@ Tools can also be updated after creation via `PATCH /api/conversations/{name}` w
 
 ```
 lm/tool/
-├── GatewayTool.kt           interface: name, getToolDescriptionJsonString, execute
+├── GatewayOpenApiTool.kt           interface: name, getToolDescriptionJsonString, execute
 ├── ToolDescriptor.kt        name, description, parameters → toJsonObject()
 ├── ToolParam.kt             name, type, description, required, default
 ├── ToolParamType.kt         enum: STRING | INT | FLOAT | BOOLEAN | OBJECT
 ├── ToolRegistry.kt          singleton: register, unregister, get, getToolProviders, listAll, clear
 └── builtin/
-    ├── DateTimeTool.kt      "datetime"   — bundled, no credentials
+    ├── DateTimeOpenApiTool.kt      "datetime"   — bundled, no credentials
     ├── CalculatorTool.kt    "calculator" — bundled, no credentials
-    ├── LMServiceTool.kt     "litertlm-docs" — reads resources/docs/*.md
+    ├── LMServiceOpenApiTool.kt     "litertlm-docs" — reads resources/docs/*.md
     ├── GithubTool.kt        "github"     — stub, needs GITHUB_TOKEN
     ├── TrelloTool.kt        "trello"     — stub, needs TRELLO_API_KEY + TRELLO_TOKEN
     └── RogoTool.kt          "rogo"       — stub, needs ROGO_API_KEY
