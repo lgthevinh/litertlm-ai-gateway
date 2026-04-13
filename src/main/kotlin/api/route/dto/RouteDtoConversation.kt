@@ -51,7 +51,14 @@ data class StoredMessageDto(
     val role: String,
     val text: String,
     val seq: Int,
-    val createdAt: Long
+    val createdAt: Long,
+    val attachments: List<AttachmentDto>? = null
+)
+
+/** Represents one attachment on a stored message (for API responses). */
+data class AttachmentDto(
+    val type: String,       // "image" | "audio"
+    val filename: String
 )
 
 data class GetMessagesResponse(

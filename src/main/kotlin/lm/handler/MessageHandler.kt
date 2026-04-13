@@ -1,11 +1,17 @@
 package org.thingai.app.aigateway.lm.handler
 
+import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
+import org.thingai.app.aigateway.lm.attachment.AttachmentStore
+import org.thingai.app.aigateway.lm.attachment.AttachmentRef
+import org.thingai.app.aigateway.lm.attachment.AttachmentType
 import org.thingai.app.aigateway.lm.entity.LMStoredConversation
 import org.thingai.app.aigateway.lm.entity.LMStoredMessage
+import org.thingai.app.aigateway.lm.attachment.toAttachmentRefs
+import org.thingai.app.aigateway.lm.attachment.toColumnValue
 import org.thingai.app.aigateway.lm.builtin.BuiltinConversationConfig
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
 import org.thingai.base.dao.exceptions.DaoException
@@ -23,7 +29,10 @@ import java.util.UUID
  *
  * No engine or inference knowledge lives here.
  */
-class MessageHandler(private val dao: DaoSqlite) {
+class MessageHandler(
+    private val dao: DaoSqlite,
+    private val attachmentStore: AttachmentStore? = null
+) {
 
     companion object {
         private const val TAG = "MessageHandler"
@@ -140,7 +149,7 @@ class MessageHandler(private val dao: DaoSqlite) {
     }
 
     /**
-     * Deletes the conversation config and all its message history from the DB.
+     * Deletes the conversation config, all message history, and attachment files from disk.
      * @return `true` if the conversation existed and was deleted.
      */
     fun deleteConversation(name: String): Boolean {
@@ -154,6 +163,10 @@ class MessageHandler(private val dao: DaoSqlite) {
             messages.forEach { dao.delete(it) }
 
             dao.delete(record)
+
+            // Clean up attachment files on disk
+            attachmentStore?.deleteConversation(name)
+
             ILog.i(TAG, "deleteConversation: '$name' deleted, ${messages.size} message(s) removed")
             true
         } catch (e: DaoException) {
@@ -168,13 +181,16 @@ class MessageHandler(private val dao: DaoSqlite) {
      * Appends a user message and the model reply as a pair to the DB.
      * Both share the same [seq] base — user is [seq], model is [seq] + 1.
      *
+     * @param attachments Optional attachment references for the user message (multimodal).
+     *
      * Call [nextSeq] first to get the correct base sequence number.
      */
     fun appendMessages(
         conversationName: String,
         userText: String,
         modelText: String,
-        seq: Int
+        seq: Int,
+        attachments: List<AttachmentRef> = emptyList()
     ) {
         val now = System.currentTimeMillis()
         try {
@@ -184,6 +200,7 @@ class MessageHandler(private val dao: DaoSqlite) {
                     conversationName = conversationName,
                     role             = "user",
                     text             = userText,
+                    attachments      = attachments.toColumnValue(),
                     seq              = seq,
                     createdAt        = now
                 )
@@ -198,7 +215,8 @@ class MessageHandler(private val dao: DaoSqlite) {
                     createdAt        = now
                 )
             )
-            ILog.d(TAG, "appendMessages: 2 messages saved for '$conversationName' at seq=$seq")
+            val attInfo = if (attachments.isNotEmpty()) " (${attachments.size} attachment(s))" else ""
+            ILog.d(TAG, "appendMessages: 2 messages saved for '$conversationName' at seq=$seq$attInfo")
         } catch (e: DaoException) {
             ILog.e(TAG, "appendMessages: DB error: ${e.message}")
         }
@@ -258,13 +276,15 @@ class MessageHandler(private val dao: DaoSqlite) {
 
     /**
      * Loads the last [HISTORY_LIMIT] messages for [conversationName], sorted by [seq] ascending.
+     * Multimodal messages are reconstructed with [Content.ImageFile] / [Content.AudioFile]
+     * from stored attachment references.
      */
     private fun loadHistory(conversationName: String): List<Message> {
         return try {
             val all = dao.query(LMStoredMessage::class.java, "conversationName", conversationName)
             all.sortedBy { it.seq }
                 .takeLast(HISTORY_LIMIT)
-                .map { it.toMessage() }
+                .map { it.toMessage(conversationName, attachmentStore) }
         } catch (e: DaoException) {
             ILog.e(TAG, "loadHistory: DB error: ${e.message}")
             emptyList()
@@ -332,8 +352,40 @@ class MessageHandler(private val dao: DaoSqlite) {
 
 // ── Extensions ────────────────────────────────────────────────────────────────
 
-/** Maps a [LMStoredMessage] row to a LiteRTLM [Message] for use in [ConversationConfig.initialMessages]. */
-private fun LMStoredMessage.toMessage(): Message = when (role) {
-    "model" -> Message.model(text)
-    else    -> Message.user(text)
+/**
+ * Maps a [LMStoredMessage] row to a LiteRTLM [Message] for use in [ConversationConfig.initialMessages].
+ *
+ * For text-only messages, uses the simple [Message.user] / [Message.model] factories.
+ * For multimodal messages, builds [Contents] with [Content.Text] + [Content.ImageFile] /
+ * [Content.AudioFile] resolved from stored attachment references.
+ */
+private fun LMStoredMessage.toMessage(
+    conversationName: String,
+    attachmentStore: AttachmentStore?
+): Message {
+    val refs = attachments.toAttachmentRefs()
+
+    // Text-only fast path
+    if (refs.isEmpty() || attachmentStore == null) {
+        return when (role) {
+            "model" -> Message.model(text)
+            else    -> Message.user(text)
+        }
+    }
+
+    // Multimodal: build Contents with text + file references
+    val parts = mutableListOf<Content>(Content.Text(text))
+    for (ref in refs) {
+        val absPath = attachmentStore.absolutePath(conversationName, ref.filename)
+        parts += when (ref.type) {
+            AttachmentType.IMAGE -> Content.ImageFile(absPath)
+            AttachmentType.AUDIO -> Content.AudioFile(absPath)
+        }
+    }
+    val contents = Contents.of(parts)
+
+    return when (role) {
+        "model" -> Message.model(contents)
+        else    -> Message.user(contents)
+    }
 }

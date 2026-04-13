@@ -1,16 +1,55 @@
 package org.thingai.app.aigateway.lm.handler
 
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import org.thingai.app.aigateway.lm.attachment.AttachmentStore
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.conversation.ConversationState
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
+import org.thingai.app.aigateway.lm.attachment.AttachmentRef
+import org.thingai.app.aigateway.lm.attachment.AttachmentType
 import org.thingai.app.aigateway.lm.entity.LMStoredConversation
 import org.thingai.app.aigateway.lm.entity.LMStoredMessage
 import org.thingai.base.log.ILog
+
+/**
+ * A multimodal attachment received from a client (REST or WS).
+ * Raw bytes that have not yet been saved to disk.
+ *
+ * @param type  Whether this is an image or audio file.
+ * @param bytes Raw file content.
+ * @param ext   File extension without dot (e.g. "jpg", "png", "wav").
+ */
+data class IncomingAttachment(
+    val type: AttachmentType,
+    val bytes: ByteArray,
+    val ext: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+
+        other as IncomingAttachment
+
+        if (type != other.type) return false
+        if (!bytes.contentEquals(other.bytes)) return false
+        if (ext != other.ext) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = type.hashCode()
+        result = 31 * result + bytes.contentHashCode()
+        result = 31 * result + ext.hashCode()
+        return result
+    }
+}
 
 /**
  * Orchestrates conversation lifecycle and message inference.
@@ -30,6 +69,7 @@ import org.thingai.base.log.ILog
 class ConversationHandler(
     private val messageHandler: MessageHandler,
     private val engineHandler: EngineHandler,
+    private val attachmentStore: AttachmentStore? = null,
 ) {
 
     companion object {
@@ -168,7 +208,8 @@ class ConversationHandler(
     fun getQueueEntries(): List<QueueEntry> = engineHandler.getQueueEntries()
 
     /**
-     * Submits [message] to the conversation identified by [name].
+     * Submits [message] (with optional multimodal [attachments]) to the conversation
+     * identified by [name].
      *
      * Inference is launched in a **detached coroutine** ([inferenceScope]) that runs to
      * completion regardless of whether the caller's flow is still being collected.
@@ -182,7 +223,11 @@ class ConversationHandler(
      * Persistence: user + model messages are written to DB inside the detached coroutine
      * on [ConversationWsChunk.Done], before the job transitions to DONE.
      */
-    fun sendMessage(name: String, message: String): Flow<ConversationWsChunk> = flow {
+    fun sendMessage(
+        name: String,
+        message: String,
+        attachments: List<IncomingAttachment> = emptyList()
+    ): Flow<ConversationWsChunk> = flow {
         // 1. Guard — conversation must exist
         val config = messageHandler.buildConfig(name)
         if (config == null) {
@@ -199,9 +244,36 @@ class ConversationHandler(
         // 3. Register job — IDLE → BUSY
         val job = ConversationJobRegistry.startJob(name)
 
-        // 4. Launch detached inference — survives WS disconnect
+        // 4. Build multimodal Contents + save attachments to disk
+        val contentParts = mutableListOf<Content>(Content.Text(message))
+        val attachmentRefs = mutableListOf<AttachmentRef>()
+
+        if (attachments.isNotEmpty() && attachmentStore != null) {
+            val seq = messageHandler.nextSeq(name)
+            attachments.forEachIndexed { index, att ->
+                // For initial send: use in-memory bytes (ImageBytes / AudioBytes)
+                when (att.type) {
+                    AttachmentType.IMAGE -> contentParts += Content.ImageBytes(att.bytes)
+                    AttachmentType.AUDIO -> contentParts += Content.AudioBytes(att.bytes)
+                }
+                // Save to disk for future history replay
+                val filename = attachmentStore.save(name, seq, index, att.ext, att.bytes)
+                attachmentRefs += AttachmentRef(att.type, filename)
+            }
+            ILog.d(TAG, "sendMessage: '$name' built Contents with ${attachments.size} attachment(s)")
+        }
+
+        val contents = Contents.of(contentParts)
+
+        // 5. Launch detached inference — survives WS disconnect
         inferenceScope.launch {
-            val task = ConversationTask(convName = name, config = config, message = message)
+            val task = ConversationTask(
+                convName       = name,
+                config         = config,
+                contents       = contents,
+                userText       = message,
+                attachmentRefs = attachmentRefs
+            )
 
             engineHandler.submit(task).collect { chunk ->
                 when (chunk) {
@@ -214,9 +286,10 @@ class ConversationHandler(
                             val seq = messageHandler.nextSeq(name)
                             messageHandler.appendMessages(
                                 conversationName = name,
-                                userText         = message,
+                                userText         = task.userText,
                                 modelText        = job.replyBuffer.toString(),
-                                seq              = seq
+                                seq              = seq,
+                                attachments      = task.attachmentRefs
                             )
                         }
                         ConversationJobRegistry.onDone(name)
@@ -231,7 +304,7 @@ class ConversationHandler(
             }
         }
 
-        // 5. Signal WS handler — queued position if engine is busy, then Busy
+        // 6. Signal WS handler — queued position if engine is busy, then Busy
         val queueSize = engineHandler.getQueueSize()
         if (queueSize > 0) {
             emit(ConversationWsChunk.Queued(position = queueSize + 1))

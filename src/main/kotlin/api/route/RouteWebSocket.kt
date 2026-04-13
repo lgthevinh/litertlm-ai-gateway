@@ -20,7 +20,10 @@ import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
 import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
+import org.thingai.app.aigateway.lm.attachment.AttachmentType
+import org.thingai.app.aigateway.lm.handler.IncomingAttachment
 import org.thingai.app.aigateway.utils.JsonUtils
+import java.util.Base64
 
 fun Route.conversationWebSocket() {
 
@@ -103,8 +106,19 @@ fun Route.conversationWebSocket() {
                 continue
             }
 
+            // Decode multimodal attachments from base64
+            val attachments = mutableListOf<IncomingAttachment>()
+            req.images?.forEach { b64 ->
+                val (ext, bytes) = parseBase64WithMime(b64)
+                attachments += IncomingAttachment(AttachmentType.IMAGE, bytes, ext)
+            }
+            req.audio?.forEach { b64 ->
+                val (ext, bytes) = parseBase64WithMime(b64)
+                attachments += IncomingAttachment(AttachmentType.AUDIO, bytes, ext)
+            }
+
             // Launch detached inference — collect the single Busy/Error signal
-            handler.sendMessage(name, message).collect { chunk ->
+            handler.sendMessage(name, message, attachments).collect { chunk ->
                 when (chunk) {
                     is ConversationWsChunk.Queued -> {
                         sendJson(WsQueuedFrame(position = chunk.position))
@@ -150,4 +164,24 @@ private suspend fun DefaultWebSocketServerSession.sendJson(obj: Any) {
 
 private suspend fun DefaultWebSocketServerSession.sendError(message: String) {
     send(Frame.Text(JsonUtils.toJson(WsErrorFrame(error = message))))
+}
+
+/**
+ * Parses a base64 string, optionally with a data-URI prefix.
+ *
+ * Accepts:
+ * - Plain base64: `"iVBORw0KGgo..."` → defaults to the fallback extension
+ * - Data URI: `"data:image/png;base64,iVBORw0KGgo..."` → extracts the extension from MIME
+ *
+ * @return Pair of (extension, decoded bytes).
+ */
+private fun parseBase64WithMime(input: String): Pair<String, ByteArray> {
+    val match = Regex("^data:([^;]+);base64,(.+)$").matchEntire(input.trim())
+    return if (match != null) {
+        val mime = match.groupValues[1]        // e.g. "image/png", "audio/wav"
+        val ext = mime.substringAfter('/').lowercase().take(8)
+        ext to Base64.getDecoder().decode(match.groupValues[2])
+    } else {
+        "bin" to Base64.getDecoder().decode(input.trim())
+    }
 }

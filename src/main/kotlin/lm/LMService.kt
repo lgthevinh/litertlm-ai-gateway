@@ -1,6 +1,7 @@
 package org.thingai.app.aigateway.lm
 
 import com.google.ai.edge.litertlm.EngineConfig
+import org.thingai.app.aigateway.lm.attachment.AttachmentStore
 import org.thingai.app.aigateway.lm.handler.ConversationHandler
 import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
@@ -12,6 +13,7 @@ import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoListDocsTool
 import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoReadDocTool
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
+import java.io.File
 
 object LMService {
 
@@ -19,6 +21,10 @@ object LMService {
 
     private var engineConfig: EngineConfig? = null
     private var dao: DaoSqlite? = null
+
+    /** Application data directory — set from [LMApplication.appDir] before [start]. */
+    var appDir: File? = null
+        private set
 
     /** Exposed to routes — null until [start] completes successfully. */
     @Volatile
@@ -35,6 +41,10 @@ object LMService {
 
     fun setDao(dao: DaoSqlite) {
         this.dao = dao
+    }
+
+    fun setAppDir(dir: File) {
+        this.appDir = dir
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -64,7 +74,8 @@ object LMService {
         conversationHandler = null
 
         val newEngineHandler  = EngineHandler(config)
-        val newMessageHandler = MessageHandler(db)
+        val newAttachmentStore = appDir?.let { AttachmentStore(it) }
+        val newMessageHandler = MessageHandler(db, newAttachmentStore)
 
         engineHandler = newEngineHandler
 
@@ -74,8 +85,9 @@ object LMService {
                 registerBuiltinTools()
 
                 conversationHandler = ConversationHandler(
-                    messageHandler = newMessageHandler,
-                    engineHandler  = newEngineHandler
+                    messageHandler  = newMessageHandler,
+                    engineHandler   = newEngineHandler,
+                    attachmentStore = newAttachmentStore
                 )
                 ILog.i(TAG, "start: ready — engine online")
             } else {

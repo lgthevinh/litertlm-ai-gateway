@@ -2,16 +2,17 @@
 // State
 // ═══════════════════════════════════════════════════════════════════════
 const state = {
-  accessToken:  null,
-  refreshToken: null,
-  username:     null,
-  activeConv:   null,
-  ws:           null,
-  streaming:    false,
-  messages:     {},
-  revokeTarget: null,
-  editTarget:   null,
-  statelessMap: {},     // { convName: boolean } — populated by renderConvList
+  accessToken:       null,
+  refreshToken:      null,
+  username:          null,
+  activeConv:        null,
+  ws:                null,
+  streaming:         false,
+  messages:          {},
+  revokeTarget:      null,
+  editTarget:        null,
+  statelessMap:      {},     // { convName: boolean } — populated by renderConvList
+  pendingAttachments: [],    // [{ file, dataUrl, type }] — staged before send
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -181,6 +182,10 @@ function selectConv(name) {
   state.streaming  = false;
   state.activeConv = name;
 
+  // Clear pending attachments when switching conversations
+  state.pendingAttachments = [];
+  renderAttachPreview();
+
   document.getElementById('conv-title').textContent = name;
 
   // Stateless badge
@@ -193,6 +198,7 @@ function selectConv(name) {
 
   document.getElementById('send-btn').disabled   = true;
   document.getElementById('chat-input').disabled = true;
+  document.getElementById('attach-btn').disabled = true;
   setWsStatus('disconnected');
 
   document.querySelectorAll('.conv-item').forEach(el => {
@@ -211,7 +217,15 @@ async function loadMessages(name) {
   try {
     const res = await authApi('/conversations/' + encodeURIComponent(name) + '/messages', 'GET');
     if (res.ok) {
-      state.messages[name] = (res.messages || []).map(m => ({ role: m.role, text: m.text }));
+      state.messages[name] = (res.messages || []).map(m => {
+        // Map API attachment refs to renderable format
+        const attachments = (m.attachments || []).map(att => ({
+          type:     att.type,
+          filename: att.filename,
+          url:      '/api/attachments/' + encodeURIComponent(name) + '/' + encodeURIComponent(att.filename)
+        }));
+        return { role: m.role, text: m.text, attachments };
+      });
     } else {
       state.messages[name] = [];
     }
@@ -234,8 +248,12 @@ function renderMessages(name) {
   }
   box.innerHTML = msgs.map(m => {
     if (m.role === 'user') {
-      return '<div class="msg user"><div class="msg-label">' + esc(state.username) + '</div>' +
-             '<div class="msg-bubble">' + esc(m.text) + '</div></div>';
+      const attachHtml = renderAttachments(m.attachments);
+      return '<div class="msg user">' +
+             '<div class="msg-label">' + esc(state.username) + '</div>' +
+             (attachHtml ? '<div class="msg-attachments">' + attachHtml + '</div>' : '') +
+             (m.text ? '<div class="msg-bubble">' + esc(m.text) + '</div>' : '') +
+             '</div>';
     }
     return '<div class="msg model"><div class="msg-label">Model</div>' +
            '<div class="msg-bubble markdown">' + renderMarkdown(m.text) + '</div></div>';
@@ -243,9 +261,39 @@ function renderMessages(name) {
   box.scrollTop = box.scrollHeight;
 }
 
+function renderAttachments(attachments) {
+  if (!attachments || !attachments.length) return '';
+  return attachments.map(att => {
+    if (att.type === 'image') {
+      // dataUrl (live session) or API url (from history)
+      const src = att.dataUrl || att.url || '';
+      return src ? '<img class="msg-attach-img" src="' + src + '" alt="' + esc(att.name || 'image') + '">' : '';
+    }
+    if (att.type === 'audio') {
+      if (att.dataUrl) {
+        return '<audio class="msg-attach-audio" controls src="' + att.dataUrl + '"></audio>';
+      }
+      if (att.url) {
+        return '<audio class="msg-attach-audio" controls src="' + att.url + '"></audio>';
+      }
+      const label = att.name || att.filename || 'audio';
+      return '<div class="msg-attach-file">🎵 ' + esc(label) + '</div>';
+    }
+    return '';
+  }).join('');
+}
+
 function appendMessage(name, role, text) {
   if (!state.messages[name]) state.messages[name] = [];
-  state.messages[name].push({ role, text });
+  state.messages[name].push({ role, text, attachments: [] });
+  if (name === state.activeConv) renderMessages(name);
+}
+
+function appendMessageWithAttachments(name, role, text, attachments) {
+  if (!state.messages[name]) state.messages[name] = [];
+  // Store lightweight refs for rendering (dataUrl for images, type+name for audio)
+  const refs = attachments.map(a => ({ type: a.type, dataUrl: a.dataUrl, name: a.file.name }));
+  state.messages[name].push({ role, text, attachments: refs });
   if (name === state.activeConv) renderMessages(name);
 }
 
@@ -310,8 +358,7 @@ function connectWs(name) {
       setWsStatus('connected');
       // Don't enable input yet if a job is BUSY — the server will send busy/done frames
       if (!state.streaming) {
-        document.getElementById('send-btn').disabled   = false;
-        document.getElementById('chat-input').disabled = false;
+        setInputEnabled(true);
         document.getElementById('chat-input').focus();
       }
     }
@@ -322,8 +369,7 @@ function connectWs(name) {
       state.ws        = null;
       state.streaming = false;
       setWsStatus('disconnected');
-      document.getElementById('send-btn').disabled   = true;
-      document.getElementById('chat-input').disabled = true;
+      setInputEnabled(false);
     }
   };
 
@@ -343,16 +389,14 @@ function handleWsFrame(convName, frame) {
 
   if (frame.type === 'queued') {
     state.streaming = true;
-    document.getElementById('send-btn').disabled   = true;
-    document.getElementById('chat-input').disabled = true;
+    setInputEnabled(false);
     showQueuedBubble(box, frame.position);
     return;
   }
 
   if (frame.type === 'busy') {
     state.streaming = true;
-    document.getElementById('send-btn').disabled   = true;
-    document.getElementById('chat-input').disabled = true;
+    setInputEnabled(false);
     removeQueuedBubble(box);
     showThinkingBubble(box);
     return;
@@ -381,8 +425,7 @@ function handleWsFrame(convName, frame) {
     if (inProgress) inProgress.remove();
 
     state.streaming = false;
-    document.getElementById('send-btn').disabled   = false;
-    document.getElementById('chat-input').disabled = false;
+    setInputEnabled(true);
 
     const reply = frame.reply || '';
     if (reply) appendMessage(convName, 'model', reply);
@@ -395,8 +438,7 @@ function handleWsFrame(convName, frame) {
     const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble') || box.querySelector('.queued-bubble');
     if (inProgress) inProgress.remove();
     state.streaming = false;
-    document.getElementById('send-btn').disabled   = false;
-    document.getElementById('chat-input').disabled = false;
+    setInputEnabled(true);
     const errDiv = document.createElement('div');
     errDiv.style.cssText = 'color:var(--danger);font-size:13px;text-align:center;padding:12px 0;';
     errDiv.textContent = '\u26a0 ' + frame.error;
@@ -411,12 +453,57 @@ function setWsStatus(status) {
   el.textContent = status === 'connected' ? 'Connected' : 'Disconnected';
 }
 
-// ── Send message ──────────────────────────────────────────────────────
+function setInputEnabled(enabled) {
+  document.getElementById('send-btn').disabled    = !enabled;
+  document.getElementById('chat-input').disabled  = !enabled;
+  document.getElementById('attach-btn').disabled  = !enabled;
+}
+
+// ── File attachment ───────────────────────────────────────────────────
+function onFilesSelected(input) {
+  const files = Array.from(input.files || []);
+  input.value = ''; // reset so same file can be re-selected
+  files.forEach(file => {
+    const isImage = file.type.startsWith('image/');
+    const isAudio = file.type.startsWith('audio/');
+    if (!isImage && !isAudio) return;
+    if (state.pendingAttachments.length >= 6) return; // max 6 attachments
+    const reader = new FileReader();
+    reader.onload = e => {
+      state.pendingAttachments.push({ file, dataUrl: e.target.result, type: isImage ? 'image' : 'audio' });
+      renderAttachPreview();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderAttachPreview() {
+  const strip = document.getElementById('attach-preview');
+  if (!state.pendingAttachments.length) { strip.innerHTML = ''; return; }
+  strip.innerHTML = state.pendingAttachments.map((att, i) => {
+    if (att.type === 'image') {
+      return '<div class="attach-thumb" title="' + esc(att.file.name) + '">' +
+             '<img src="' + att.dataUrl + '">' +
+             '<button class="attach-remove" onclick="removeAttachment(' + i + ')">✕</button></div>';
+    }
+    // audio
+    const ext = att.file.name.split('.').pop().toUpperCase();
+    return '<div class="attach-thumb attach-audio" title="' + esc(att.file.name) + '">' +
+           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>' +
+           '<span>' + esc(ext) + '</span>' +
+           '<button class="attach-remove" onclick="removeAttachment(' + i + ')">✕</button></div>';
+  }).join('');
+}
+
+function removeAttachment(index) {
+  state.pendingAttachments.splice(index, 1);
+  renderAttachPreview();
+}
 function sendMessage() {
   if (!state.activeConv || !state.ws || state.ws.readyState !== WebSocket.OPEN || state.streaming) return;
   const input = document.getElementById('chat-input');
   const text  = input.value.trim();
-  if (!text) return;
+  if (!text && !state.pendingAttachments.length) return;
 
   input.value = '';
   input.style.height = 'auto';
@@ -425,11 +512,22 @@ function sendMessage() {
   const empty = box.querySelector('.chat-empty');
   if (empty) empty.remove();
 
-  appendMessage(state.activeConv, 'user', text);
+  // Snapshot and clear pending attachments
+  const attachments = state.pendingAttachments.splice(0);
+  renderAttachPreview();
+
+  // Build WS payload
+  const payload = { message: text || '' };
+  const images = attachments.filter(a => a.type === 'image').map(a => a.dataUrl);
+  const audio  = attachments.filter(a => a.type === 'audio').map(a => a.dataUrl);
+  if (images.length) payload.images = images;
+  if (audio.length)  payload.audio  = audio;
+
+  // Render user message with attachment previews
+  appendMessageWithAttachments(state.activeConv, 'user', text, attachments);
   state.streaming = true;
-  document.getElementById('send-btn').disabled   = true;
-  document.getElementById('chat-input').disabled = true;
-  state.ws.send(JSON.stringify({ message: text }));
+  setInputEnabled(false);
+  state.ws.send(JSON.stringify(payload));
 }
 
 // ── Queued bubble helpers ────────────────────────────────────────────
@@ -552,8 +650,7 @@ async function deleteConv(evt, name) {
       wsDisconnect();
       state.activeConv = null;
       document.getElementById('conv-title').textContent = 'Select a conversation';
-      document.getElementById('send-btn').disabled      = true;
-      document.getElementById('chat-input').disabled    = true;
+      setInputEnabled(false);
       document.getElementById('chat-box').innerHTML     =
         '<div class="chat-empty"><strong>LiteRTLM</strong>Select or create a conversation to start chatting</div>';
     }
