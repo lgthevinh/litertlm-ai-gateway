@@ -1,6 +1,12 @@
 package org.thingai.app.aigateway.api.route
 
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.PartData
+import io.ktor.http.content.forEachPart
+import io.ktor.http.content.streamProvider
+import io.ktor.server.request.contentType
+import io.ktor.server.request.receiveMultipart
 import io.ktor.server.request.receiveText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
@@ -10,6 +16,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import org.thingai.app.aigateway.api.plugin.DualAuthPlugin
 import org.thingai.app.aigateway.api.route.dto.ApiErrorResponse
+import org.thingai.app.aigateway.api.route.dto.AttachmentDto
 import org.thingai.app.aigateway.api.route.dto.ConversationStateResponse
 import org.thingai.app.aigateway.api.route.dto.ConversationSummary
 import org.thingai.app.aigateway.api.route.dto.CreateConversationRequest
@@ -26,6 +33,9 @@ import org.thingai.app.aigateway.api.route.extension.respondJson
 import org.thingai.app.aigateway.lm.LMService
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
+import org.thingai.app.aigateway.lm.attachment.AttachmentType
+import org.thingai.app.aigateway.lm.attachment.toAttachmentRefs
+import org.thingai.app.aigateway.lm.handler.IncomingAttachment
 import org.thingai.app.aigateway.utils.JsonUtils
 import kotlin.collections.map
 
@@ -124,11 +134,16 @@ fun Route.conversation() {
             }
 
             val messages = handler.getHistory(name).map { it ->
+                val attachmentDtos = it.attachments.toAttachmentRefs()
+                    .map { ref -> AttachmentDto(type = ref.type.name.lowercase(), filename = ref.filename) }
+                    .ifEmpty { null }
+
                 StoredMessageDto(
-                    role      = it.role,
-                    text      = it.text,
-                    seq       = it.seq,
-                    createdAt = it.createdAt
+                    role        = it.role,
+                    text        = it.text,
+                    seq         = it.seq,
+                    createdAt   = it.createdAt,
+                    attachments = attachmentDtos
                 )
             }
             call.respondJson(JsonUtils.toJson(GetMessagesResponse(ok = true, messages = messages)))
@@ -159,7 +174,9 @@ fun Route.conversation() {
         }
 
         // POST /api/conversations/{name}/messages
-        // Body: { "message": "Hello, how are you?" }
+        // Accepts either:
+        //   - application/json: { "message": "Hello" }
+        //   - multipart/form-data: "message" text part + optional "images"/"audio" file parts
         // Response 200: { "ok": true, "reply": "I'm doing well..." }
         post("/{name}/messages") {
             val handler = LMService.conversationHandler
@@ -174,15 +191,50 @@ fun Route.conversation() {
                 return@post
             }
 
-            val body = call.receiveText().trim()
-            if (body.isEmpty()) {
-                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Request body is required")), HttpStatusCode.BadRequest)
-                return@post
+            // Parse message and attachments based on content type
+            var message: String? = null
+            val attachments = mutableListOf<IncomingAttachment>()
+
+            val contentType = call.request.contentType()
+            if (contentType.match(ContentType.MultiPart.FormData)) {
+                // Multipart: extract text + file parts
+                val multipart = call.receiveMultipart()
+                multipart.forEachPart { part ->
+                    when (part) {
+                        is PartData.FormItem -> {
+                            if (part.name == "message") {
+                                message = part.value.trim()
+                            }
+                        }
+                        is PartData.FileItem -> {
+                            @Suppress("DEPRECATION")
+                            val bytes = part.streamProvider().readBytes()
+                            val ext = part.originalFileName
+                                ?.substringAfterLast('.', "bin")
+                                ?.lowercase()
+                                ?: "bin"
+
+                            when (part.name) {
+                                "images" -> attachments += IncomingAttachment(AttachmentType.IMAGE, bytes, ext)
+                                "audio"  -> attachments += IncomingAttachment(AttachmentType.AUDIO, bytes, ext)
+                            }
+                        }
+                        else -> Unit
+                    }
+                    part.dispose()
+                }
+            } else {
+                // JSON fallback (backward compatible)
+                val body = call.receiveText().trim()
+                if (body.isEmpty()) {
+                    call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Request body is required")), HttpStatusCode.BadRequest)
+                    return@post
+                }
+                val req = runCatching { JsonUtils.fromJson(body, SendMessageRequest::class.java) }.getOrNull()
+                message = req?.message?.trim()
             }
 
-            val req = runCatching { JsonUtils.fromJson(body, SendMessageRequest::class.java) }.getOrNull()
-            val message = req?.message?.trim()?.takeIf { it.isNotBlank() }
-            if (message == null) {
+            if (message.isNullOrBlank()) {
                 call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Missing field: message")), HttpStatusCode.BadRequest)
                 return@post
             }
@@ -191,7 +243,7 @@ fun Route.conversation() {
             var errorMessage: String? = null
             var reply: String? = null
 
-            handler.sendMessage(name, message).collect { chunk ->
+            handler.sendMessage(name, message!!, attachments).collect { chunk ->
                 when (chunk) {
                     is ConversationWsChunk.Busy  -> {
                         val busyJob = ConversationJobRegistry.getBusyJob(name)
@@ -207,10 +259,11 @@ fun Route.conversation() {
                 }
             }
 
-            if (errorMessage != null) {
-                val status = if (errorMessage!!.contains("not found", ignoreCase = true))
+            val err = errorMessage
+            if (err != null) {
+                val status = if (err.contains("not found", ignoreCase = true))
                     HttpStatusCode.NotFound else HttpStatusCode.InternalServerError
-                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, errorMessage!!)), status)
+                call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, err)), status)
                 return@post
             }
 

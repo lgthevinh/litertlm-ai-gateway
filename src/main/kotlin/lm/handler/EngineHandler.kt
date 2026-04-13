@@ -1,6 +1,7 @@
 package org.thingai.app.aigateway.lm.handler
 
 import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
+import org.thingai.app.aigateway.lm.attachment.AttachmentRef
 import org.thingai.base.log.ILog
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.Executors
@@ -19,18 +21,22 @@ import java.util.concurrent.Executors
 /**
  * A single inference task submitted to the [EngineHandler] queue.
  *
- * @param convName The conversation this task belongs to (used for queue visibility).
- * @param config   The fully-built [ConversationConfig] including system instruction,
- *                 sampler config, history, and tools.
- * @param message  The new user message to send.
- * @param reply    Channel used to stream [ConversationWsChunk] frames back to the caller.
- *                 The worker sends tokens, then [ConversationWsChunk.Done] or
- *                 [ConversationWsChunk.Error], then closes the channel.
+ * @param convName       The conversation this task belongs to (used for queue visibility).
+ * @param config         The fully-built [ConversationConfig] including system instruction,
+ *                       sampler config, history, and tools.
+ * @param contents       The multimodal user message to send (text, images, audio wrapped in [Contents]).
+ * @param userText       The plain-text portion of the user message (for DB persistence).
+ * @param attachmentRefs Attachment references for this message (for DB persistence). Empty for text-only.
+ * @param reply          Channel used to stream [ConversationWsChunk] frames back to the caller.
+ *                       The worker sends tokens, then [ConversationWsChunk.Done] or
+ *                       [ConversationWsChunk.Error], then closes the channel.
  */
 data class ConversationTask(
     val convName: String,
     val config: ConversationConfig,
-    val message: String,
+    val contents: Contents,
+    val userText: String = "",
+    val attachmentRefs: List<AttachmentRef> = emptyList(),
     val reply: Channel<ConversationWsChunk> = Channel(Channel.UNLIMITED)
 )
 
@@ -191,7 +197,7 @@ class EngineHandler(private val engineConfig: EngineConfig) {
         try {
             conversation = engine.createConversation(task.config)
 
-            conversation.sendMessageAsync(task.message)
+            conversation.sendMessageAsync(task.contents)
                 .catch { e ->
                     ILog.e(TAG, "worker: inference error: ${e.message}")
                     task.reply.send(ConversationWsChunk.Error(e.message ?: "Inference failed"))

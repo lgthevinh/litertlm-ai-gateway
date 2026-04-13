@@ -11,7 +11,9 @@ import org.thingai.app.aigateway.lm.entity.LMStoredMessage
 import org.thingai.app.aigateway.utils.EnvConfig
 import org.thingai.base.Service
 import org.thingai.base.log.ILog
+import org.thingai.platform.dao.DaoFile
 import org.thingai.platform.dao.DaoSqlite
+import java.io.File
 
 object LMApplication : Service() {
 
@@ -38,6 +40,7 @@ object LMApplication : Service() {
         val authPassword = EnvConfig["AUTH_PASSWORD"] ?: "change-me-password"
 
         val dao = DaoSqlite("$appDir/lm_application.db")
+        val daoFile = DaoFile("$appDir/files")
         dao.initDao(
             arrayOf(
                 LMApiKey::class.java,
@@ -54,11 +57,13 @@ object LMApplication : Service() {
         )
 
         LMService.setDao(dao)
+        LMService.setAppDir(File(appDir))
         LMService.setEngineConfig(
             EngineConfig(
                 modelPath    = "./model/gemma4-e2b/gemma-4-E2B-it.litertlm",
                 backend      = Backend.CPU(),
                 audioBackend = Backend.CPU(),
+                visionBackend = Backend.CPU()
             )
         )
         LMService.start { success ->

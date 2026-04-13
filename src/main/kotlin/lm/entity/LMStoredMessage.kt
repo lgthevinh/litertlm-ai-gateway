@@ -34,6 +34,14 @@ data class LMStoredMessage(
     @DaoColumn
     var text: String,
 
+    /**
+     * Comma-separated attachment references for multimodal messages.
+     * Format: `"image:0_0.jpg,audio:0_1.wav"` — each entry is `type:filename`.
+     * Null for text-only messages.
+     */
+    @DaoColumn
+    var attachments: String? = null,
+
     /** Monotonically increasing sequence number within the conversation. */
     @DaoColumn
     var seq: Int,
@@ -49,6 +57,7 @@ data class LMStoredMessage(
         conversationName = "",
         role             = "user",
         text             = "",
+        attachments      = null,
         seq              = 0,
         createdAt        = 0L
     )

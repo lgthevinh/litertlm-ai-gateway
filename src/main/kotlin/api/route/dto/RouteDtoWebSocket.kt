@@ -7,9 +7,15 @@ package org.thingai.app.aigateway.api.route.dto
 
 /**
  * Frame sent by the client to submit a message.
+ *
+ * For text-only messages, only [message] is needed.
+ * For multimodal messages, include [images] and/or [audio] as base64-encoded strings.
+ * Data-URI prefixes (`data:image/png;base64,...`) are supported and will be stripped.
  */
 data class WsIncomingMessage(
-    val message: String?
+    val message: String?,
+    val images: List<String>? = null,
+    val audio: List<String>? = null
 )
 
 /**
