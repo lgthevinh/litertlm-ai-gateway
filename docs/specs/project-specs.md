@@ -43,10 +43,12 @@ litertlm-ai-gateway/
 ├── docs/
 │   ├── specs/
 │   │   ├── project-specs.md        # This file
+│   │   ├── api-endpoints.md        # Full REST + WS API reference
 │   │   ├── litertlmlibs-specs.md   # LiteRTLM SDK research notes
 │   │   └── ai-guidances.md         # AI agent behaviour guidelines
 │   └── sketch/
 │       ├── architecture.md         # Full system architecture
+│       ├── conversation-architecture.md  # Conversation + inference flow
 │       └── tool-architecture.md    # Tool system design
 │
 └── src/main/kotlin/
@@ -61,18 +63,18 @@ litertlm-ai-gateway/
     │   └── route/
     │       ├── Route.kt            # Registers all routes on Application
     │       ├── RouteAuth.kt        # POST /auth/login|refresh|logout
-    │       ├── RouteConversation.kt# GET|POST /conversations, GET|POST|DELETE /{name}/messages
+    │       ├── RouteConversation.kt# GET|POST /conversations, GET|POST|PATCH|DELETE /{name}
     │       ├── RouteWebSocket.kt   # WS /ws/conversations/{name}
     │       ├── RouteApiKey.kt      # POST /api-key/generate, GET /list|info, DELETE /revoke
-    │       ├── RouteConfig.kt      # Static UI + GET /api/tools + GET /api/queue
+    │       ├── RouteConfig.kt      # Static UI + GET /api/tools|queue|attachments
     │       ├── RouteExtensions.kt  # respondJson() extension for ApplicationCall
     │       └── dto/
     │           ├── RouteDtoAuth.kt         # LoginRequest/Response, RefreshRequest, ...
     │           ├── RouteDtoAppKey.kt       # GenerateKeyRequest/Response, ApiKeyInfo, ...
     │           ├── RouteDtoConversation.kt # CreateConversationRequest/Response, SendMessage,
-    │           │                           # GetMessages, StoredMessageDto, ToolDto, ...
-    │           ├── RouteDtoWebSocket.kt    # WsIncomingMessage, WsQueuedFrame, WsBusyFrame,
-    │           │                           # WsTokenFrame, WsDoneFrame, WsErrorFrame
+    │           │                           # GetMessages, StoredMessageDto, AttachmentDto, ...
+    │           ├── RouteDtoWebSocket.kt    # WsIncomingMessage (with images/audio), WsQueuedFrame,
+    │           │                           # WsBusyFrame, WsTokenFrame, WsDoneFrame, WsErrorFrame
     │           └── RouteDtoCommon.kt       # OkResponse, ApiErrorResponse
     │
     ├── auth/
@@ -82,28 +84,33 @@ litertlm-ai-gateway/
     │   └── LMServiceAuth.kt        # Single-user JWT auth: login, refresh, logout, validate
     │
     ├── lm/
-    │   ├── LMService.kt            # Singleton: setDao, setEngineConfig, start, stop
-    │   │                           # Registers builtin tools on start
+    │   ├── LMService.kt            # Singleton: setDao, setAppDir, setEngineConfig, start, stop
+    │   │                           # Registers builtin tools on start; exposes appDir
     │   ├── builtin/
     │   │   └── BuiltinConversationConfig.kt  # ASSISTANT, CODER, CONCISE, CREATIVE presets
     │   ├── entity/
     │   │   ├── LMStoredConversation.kt  # @DaoTable lm_conversations
-    │   │   └── LMStoredMessage.kt       # @DaoTable lm_messages
+    │   │   └── LMStoredMessage.kt       # @DaoTable lm_messages (with attachments column)
+    │   ├── attachment/
+    │   │   ├── AttachmentRef.kt    # AttachmentType enum, AttachmentRef, toColumnValue/toAttachmentRefs
+    │   │   └── AttachmentStore.kt  # File I/O: save, absolutePath, deleteConversation
     │   ├── handler/
-    │   │   ├── WsChunk.kt               # sealed class: Token, Done, Error, Queued, Busy
-    │   │   ├── ConversationHandler.kt   # Orchestrator: lifecycle + sendMessage flow
-    │   │   ├── MessageHandler.kt        # DB persistence + buildConfig (with tool wiring)
-    │   │   └── EngineHandler.kt         # Single engine, dedicated thread, task queue + queue visibility
+    │   │   ├── ConversationHandler.kt   # Orchestrator: lifecycle + sendMessage (multimodal)
+    │   │   │                            # IncomingAttachment data class lives here
+    │   │   ├── MessageHandler.kt        # DB persistence + buildConfig (tool wiring)
+    │   │   │                            # Injected with AttachmentStore
+    │   │   └── EngineHandler.kt         # Single engine, dedicated thread, task queue
+    │   │                                # ConversationTask uses Contents (not raw String)
     │   └── tool/
-    │       ├── GatewayOpenApiTool.kt           # interface: descriptor + execute(JsonObject): Any?
+    │       ├── GatewayOpenApiTool.kt    # interface: descriptor + execute(JsonObject): Any?
     │       ├── GatewayToolProvider.kt   # extends ToolProvider — bridges to InternalJsonTool
     │       ├── ToolDescriptor.kt        # name, description, parameters + toJsonObject()
     │       ├── ToolParam.kt             # name, type, description, required, default
     │       ├── ToolParamType.kt         # enum: STRING, INT, FLOAT, BOOLEAN, OBJECT
     │       ├── ToolRegistry.kt          # singleton: register, get, getAll, list, clear
     │       └── builtin/
-    │           ├── DateTimeOpenApiTool.kt      # "datetime" — current date/time
-    │           └── CalculatorTool.kt    # "calculator" — math expression evaluator
+    │           ├── DateTimeOpenApiTool.kt  # "datetime" — current date/time
+    │           └── CalculatorTool.kt       # "calculator" — math expression evaluator
     │
     ├── callback/
     │   └── RequestCallback.kt      # Generic onSuccess/onError interface
@@ -124,6 +131,7 @@ litertlm-ai-gateway/
 | GET | `/` | Serves the web UI (`index.html`) |
 | GET | `/api/tools` | List all registered tools and their schemas |
 | GET | `/api/queue` | Live inference queue (conversation names, positions, statuses) |
+| GET | `/api/attachments/{convName}/{filename}` | Serve an attachment file (image or audio) |
 | POST | `/api/auth/login` | Login → `{ accessToken, refreshToken }` |
 | POST | `/api/auth/refresh` | Rotate tokens → new `{ accessToken, refreshToken }` |
 | POST | `/api/auth/logout` | Revoke refresh token |
@@ -133,11 +141,13 @@ litertlm-ai-gateway/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/conversations` | List all conversations |
-| POST | `/api/conversations` | Create conversation (`name`, `config`, `systemInstruction`, `tools`) |
-| GET | `/api/conversations/{name}/messages` | Fetch full message history |
-| POST | `/api/conversations/{name}/messages` | Send message → blocking `{ reply }` |
-| DELETE | `/api/conversations/{name}` | Delete conversation and all history |
-| WS | `/ws/conversations/{name}?token=...` | Streaming inference over WebSocket |
+| POST | `/api/conversations` | Create conversation (`name`, `config`, `systemInstruction`, `tools`, `stateless`) |
+| GET | `/api/conversations/{name}/messages` | Fetch full message history (with attachment refs) |
+| GET | `/api/conversations/{name}/state` | Check conversation inference state (`IDLE`/`BUSY`) |
+| POST | `/api/conversations/{name}/messages` | Send message → blocking `{ reply }` (JSON or multipart) |
+| PATCH | `/api/conversations/{name}` | Update conversation config (sampler, system instruction, tools) |
+| DELETE | `/api/conversations/{name}` | Delete conversation, history, and attachment files |
+| WS | `/ws/conversations/{name}?token=...` | Streaming inference over WebSocket (multimodal) |
 
 ### Protected — JWT only (`AuthPlugin`)
 
@@ -147,6 +157,46 @@ litertlm-ai-gateway/
 | GET | `/api/api-key/list` | List all keys (hashes never exposed) |
 | GET | `/api/api-key/info?key=lrtlm_...` | Get key metadata |
 | DELETE | `/api/api-key/revoke` | Soft-revoke a key |
+
+---
+
+## Multimodal Support
+
+Conversations support image and audio attachments on user messages.
+
+### How attachments flow
+
+```
+Client sends image (REST multipart or WS base64)
+        │
+        ▼
+ConversationHandler.sendMessage(message, attachments: List<IncomingAttachment>)
+        │
+        ├── Builds Contents.of(Text(message), ImageBytes(bytes), AudioBytes(bytes))
+        │   for the current inference turn (in-memory, no disk read)
+        │
+        ├── Saves bytes to disk: {appDir}/attachments/{convName}/{seq}_{idx}.{ext}
+        │
+        ▼
+EngineHandler: sendMessageAsync(contents)  ← multimodal Contents
+        │
+        ▼
+ConversationHandler (on Done): persist user message row with attachments column
+        │   attachments = "image:0_0.jpg,audio:0_1.wav"  (filename refs only)
+        ▼
+History replay: text-only (images NOT re-sent to engine on subsequent turns)
+```
+
+### Attachment storage
+
+- **Location:** `{appDir}/attachments/{conversationName}/{seq}_{index}.{ext}`
+- **DB column:** `lm_messages.attachments` — comma-separated `type:filename` entries (nullable)
+- **Serving:** `GET /api/attachments/{convName}/{filename}` — returns raw bytes with correct `Content-Type`
+- **Cleanup:** `DELETE /conversations/{name}` removes the entire `attachments/{convName}/` directory
+
+### History replay design choice
+
+Attachments are **not** re-injected into engine history on subsequent turns. Only the text portion of past messages is included in `initialMessages`. This avoids loading large binary files on every inference and prevents model instability with multimodal history replay.
 
 ---
 
@@ -217,6 +267,7 @@ Two credential types, both passed as `Authorization: Bearer <token>`:
 | API key | `lrtlm_...` | Programmatic clients |
 
 `/api/conversations` and `/ws/conversations` accept either. `/api/api-key` accepts JWT only.
+WebSocket auth uses a `?token=` query parameter instead of a header.
 Credentials are configured via environment variables — there is no user registration endpoint.
 
 ---
@@ -248,28 +299,32 @@ Real environment variables always take precedence over `.env` file values.
 ./gradlew buildFatJar
 ```
 
-Output: `build/libs/aigateway-1.0-all.jar`
+Output: `build/libs/litertlm-ai-gateway-all.jar`
 
 ### Run
 
 ```bash
-./gradlew runFatJar
-```
-
-Or directly:
-
-```bash
-java -jar build/libs/aigateway-1.0-all.jar
+java -jar build/libs/litertlm-ai-gateway-all.jar
 ```
 
 Override env vars at runtime:
 
 ```bash
 AUTH_USERNAME=admin AUTH_PASSWORD=secret JWT_SECRET=mysecret \
-  java -jar build/libs/aigateway-1.0-all.jar
+  java -jar build/libs/litertlm-ai-gateway-all.jar
 ```
 
 The server starts on `http://0.0.0.0:8080`.
+
+### systemd service
+
+A `litertlm-gateway.service` unit file is included at the repo root. Install with:
+
+```bash
+sudo cp litertlm-gateway.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now litertlm-gateway
+```
 
 ---
 
@@ -279,7 +334,11 @@ At first run, `LMApplication` creates a data directory (`appDirName = "lm_applic
 
 ```
 lm_application/
-└── lm_application.db    # SQLite: api_keys, lm_conversations, lm_messages
+├── lm_application.db       # SQLite: api_keys, lm_conversations, lm_messages
+└── attachments/
+    └── {conversationName}/
+        ├── 0_0.jpg          # {seq}_{index}.{ext}
+        └── 2_0.wav
 ```
 
 ---
@@ -288,11 +347,15 @@ lm_application/
 
 - [x] User authentication (JWT — HS256, 15 min access / 7 day refresh, token rotation)
 - [x] API key management (SHA-256 hashed, `lrtlm_` prefix, soft-revoke)
-- [x] Conversation management (create, list, send message, delete)
+- [x] Conversation management (create, list, send message, update, delete)
 - [x] Conversation history persistence (SQLite `lm_messages` table, `seq`-ordered)
 - [x] Message history replay on every inference (`initialMessages` in `ConversationConfig`)
 - [x] Four builtin conversation presets (ASSISTANT, CODER, CONCISE, CREATIVE)
 - [x] Custom system instruction per conversation
+- [x] Sampler config per conversation (topK, topP, temperature)
+- [x] Update conversation config via PATCH (sampler, system instruction, tools)
+- [x] Stateless conversations (no history load or persistence)
+- [x] Conversation state endpoint (IDLE / BUSY)
 - [x] Dual-auth on conversation routes (JWT or API key)
 - [x] WebSocket streaming inference (`/ws/conversations/{name}`) with live token streaming
 - [x] REST blocking inference (`POST /conversations/{name}/messages`)
@@ -305,10 +368,15 @@ lm_application/
 - [x] Built-in tools: `datetime`, `calculator`
 - [x] Tool binding per conversation (stored in DB, resolved at inference time)
 - [x] `GET /api/tools` endpoint — list registered tools and schemas
+- [x] Multimodal support — images and audio on user messages (REST multipart + WS base64)
+- [x] Attachment storage to disk with deterministic filenames
+- [x] Attachment file serving via `GET /api/attachments/{convName}/{filename}`
+- [x] Attachment cleanup on conversation delete
 - [x] `.env` file support with environment variable override
 - [x] SQLite persistence via `DaoSqlite` (HikariCP pool)
 - [x] Structured logging via `ILog` / `ILogImpl`
-- [x] Web UI (SPA — conversations with live streaming, API keys, queue monitor, API docs with tool section)
+- [x] Web UI (SPA — conversations with live streaming, multimodal upload, API keys, queue monitor)
+- [x] systemd service unit file
 
 ## Planned Features
 
@@ -316,4 +384,3 @@ lm_application/
 - [ ] Multiple model support with dynamic loading/switching
 - [ ] Plugin architecture for external service integration (vector DBs, knowledge bases)
 - [ ] Admin dashboard (SPA + SSE live metrics)
-

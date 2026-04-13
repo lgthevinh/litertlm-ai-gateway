@@ -1,16 +1,13 @@
 package org.thingai.app.aigateway.lm.handler
 
-import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import org.thingai.app.aigateway.lm.attachment.AttachmentStore
 import org.thingai.app.aigateway.lm.attachment.AttachmentRef
-import org.thingai.app.aigateway.lm.attachment.AttachmentType
 import org.thingai.app.aigateway.lm.entity.LMStoredConversation
 import org.thingai.app.aigateway.lm.entity.LMStoredMessage
-import org.thingai.app.aigateway.lm.attachment.toAttachmentRefs
 import org.thingai.app.aigateway.lm.attachment.toColumnValue
 import org.thingai.app.aigateway.lm.builtin.BuiltinConversationConfig
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
@@ -276,8 +273,8 @@ class MessageHandler(
 
     /**
      * Loads the last [HISTORY_LIMIT] messages for [conversationName], sorted by [seq] ascending.
-     * Multimodal messages are reconstructed with [Content.ImageFile] / [Content.AudioFile]
-     * from stored attachment references.
+     * Only the text portion of each message is included — attachments are not replayed into
+     * the engine context.
      */
     private fun loadHistory(conversationName: String): List<Message> {
         return try {
@@ -355,37 +352,15 @@ class MessageHandler(
 /**
  * Maps a [LMStoredMessage] row to a LiteRTLM [Message] for use in [ConversationConfig.initialMessages].
  *
- * For text-only messages, uses the simple [Message.user] / [Message.model] factories.
- * For multimodal messages, builds [Contents] with [Content.Text] + [Content.ImageFile] /
- * [Content.AudioFile] resolved from stored attachment references.
+ * Attachments (images / audio) are intentionally **not** re-injected into history — the
+ * engine only receives the text portion of past turns.  This avoids loading large binary
+ * files on every conversation re-open and sidesteps model instability with multimodal
+ * history replay.  The attachment files remain on disk and are still served via the API.
  */
 private fun LMStoredMessage.toMessage(
     conversationName: String,
     attachmentStore: AttachmentStore?
-): Message {
-    val refs = attachments.toAttachmentRefs()
-
-    // Text-only fast path
-    if (refs.isEmpty() || attachmentStore == null) {
-        return when (role) {
-            "model" -> Message.model(text)
-            else    -> Message.user(text)
-        }
-    }
-
-    // Multimodal: build Contents with text + file references
-    val parts = mutableListOf<Content>(Content.Text(text))
-    for (ref in refs) {
-        val absPath = attachmentStore.absolutePath(conversationName, ref.filename)
-        parts += when (ref.type) {
-            AttachmentType.IMAGE -> Content.ImageFile(absPath)
-            AttachmentType.AUDIO -> Content.AudioFile(absPath)
-        }
-    }
-    val contents = Contents.of(parts)
-
-    return when (role) {
-        "model" -> Message.model(contents)
-        else    -> Message.user(contents)
-    }
+): Message = when (role) {
+    "model" -> Message.model(text)
+    else    -> Message.user(text)
 }
