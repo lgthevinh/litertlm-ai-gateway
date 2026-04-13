@@ -1,6 +1,6 @@
 # Conversation Architecture
 
-This document covers how the gateway manages concurrent conversations, the engine design, conversation context and history, and the full inference flows for WebSocket and REST clients.
+This document covers how the gateway manages concurrent conversations, the engine design, conversation context and history, multimodal attachment handling, and the full inference flows for WebSocket and REST clients.
 
 ---
 
@@ -19,6 +19,8 @@ The gateway supports multiple simultaneous conversations. Each conversation has 
 +---------------------------------------------------------------------+
 |                     ConversationHandler                              |
 |  - Guards (conversation exists, not BUSY)                            |
+|  - Builds Contents (text + optional ImageBytes/AudioBytes)           |
+|  - Saves attachment bytes to disk (AttachmentStore)                  |
 |  - Registers job in ConversationJobRegistry                          |
 |  - Launches detached inference coroutine                             |
 |  - Emits Queued (if engine busy) then Busy to caller                 |
@@ -58,12 +60,17 @@ engine-thread  (single dedicated thread, daemon)
 
 ```kotlin
 data class ConversationTask(
-    val convName: String,                 // conversation name (for queue visibility)
-    val config: ConversationConfig,       // full config rebuilt from DB each turn
-    val message: String,                  // new user message
+    val convName: String,                           // conversation name (for queue visibility)
+    val config: ConversationConfig,                 // full config rebuilt from DB each turn
+    val contents: Contents,                         // multimodal user message (text + optional media)
+    val userText: String,                           // plain text portion (for DB persistence)
+    val attachmentRefs: List<AttachmentRef>,        // saved attachment filenames (for DB persistence)
     val reply: Channel<ConversationWsChunk> = Channel(Channel.UNLIMITED)
 )
 ```
+
+`contents` is built by `ConversationHandler` from `Contents.of(Content.Text(message), Content.ImageBytes(...), ...)`.
+For text-only messages, `contents = Contents.of(message)` and `attachmentRefs` is empty.
 
 The `reply` channel is the pipe between the engine worker and the `ConversationJobRegistry`. The worker sends `Token` frames as inference progresses, then a final `Done` or `Error`.
 
@@ -72,7 +79,7 @@ The `reply` channel is the pipe between the engine worker and the `ConversationJ
 ```
 worker picks up ConversationTask
     -> engine.createConversation(config)    // native Conversation object, ephemeral
-    -> conversation.sendMessageAsync(msg)   // runs on dedicated engine thread
+    -> conversation.sendMessageAsync(task.contents)  // multimodal Contents
         -> Token frames -> task.reply channel -> ConversationJobRegistry.onToken()
     -> ConversationWsChunk.Done sent
     -> conversation.close()                 // engine resources released immediately
@@ -105,6 +112,91 @@ Exposed via `GET /api/queue` — the UI Queue page polls this every 2 seconds.
 
 ---
 
+## Multimodal Attachment Handling
+
+### IncomingAttachment
+
+Raw bytes arrive from the transport layer and are passed to `ConversationHandler`:
+
+```kotlin
+data class IncomingAttachment(
+    val type: AttachmentType,   // IMAGE or AUDIO
+    val bytes: ByteArray,
+    val ext: String             // file extension without dot: "jpg", "png", "wav", ...
+)
+```
+
+### AttachmentStore
+
+`AttachmentStore` manages attachment files on disk:
+
+```
+{appDir}/attachments/{conversationName}/{seq}_{index}.{ext}
+
+e.g.  lm_application/attachments/my-chat/4_0.jpg
+      lm_application/attachments/my-chat/4_1.wav
+```
+
+```kotlin
+class AttachmentStore(appDir: File) {
+    fun save(convName, seq, index, ext, bytes): String    // returns filename
+    fun absolutePath(convName, filename): String          // for Content.ImageFile / AudioFile
+    fun deleteConversation(convName)                      // called on conversation delete
+}
+```
+
+### How ConversationHandler builds Contents
+
+```kotlin
+// On sendMessage() with attachments:
+val contentParts = mutableListOf<Content>(Content.Text(message))
+val attachmentRefs = mutableListOf<AttachmentRef>()
+
+val seq = messageHandler.nextSeq(name)
+attachments.forEachIndexed { index, att ->
+    // For current inference turn: use in-memory bytes
+    when (att.type) {
+        IMAGE -> contentParts += Content.ImageBytes(att.bytes)
+        AUDIO -> contentParts += Content.AudioBytes(att.bytes)
+    }
+    // Save to disk for API serving; NOT for history replay
+    val filename = attachmentStore.save(name, seq, index, att.ext, att.bytes)
+    attachmentRefs += AttachmentRef(att.type, filename)
+}
+
+val contents = Contents.of(contentParts)
+```
+
+### DB persistence
+
+After inference completes (Done), `MessageHandler.appendMessages` persists:
+
+```
+lm_messages row (role=user):
+    text        = "What's in this image?"
+    attachments = "image:4_0.jpg,audio:4_1.wav"   ← nullable column
+
+lm_messages row (role=model):
+    text        = "The image shows a cat..."
+    attachments = null                              ← model replies are text-only
+```
+
+### History replay — text-only by design
+
+Attachments are **intentionally not** re-injected when rebuilding history for subsequent turns. `MessageHandler.toMessage()` always returns a text-only `Message` regardless of the stored `attachments` column:
+
+```kotlin
+// Always text-only — no Content.ImageFile / AudioFile in history
+private fun LMStoredMessage.toMessage(...): Message = when (role) {
+    "model" -> Message.model(text)
+    else    -> Message.user(text)
+}
+```
+
+**Rationale:** Loading large binary files on every conversation re-open is expensive and the model has already processed the image in the turn it was sent. Only the text context is needed for continuity.
+
+---
+
 ## Conversation Context
 
 ### How history is stored
@@ -116,6 +208,7 @@ Every completed turn persists two rows in `lm_messages`:
 | `conversationName` | Foreign key to `lm_conversations.name` |
 | `role` | `"user"` or `"model"` |
 | `text` | Full message text |
+| `attachments` | Comma-separated `type:filename` refs, or `null` |
 | `seq` | Monotonically increasing within the conversation |
 | `createdAt` | Unix epoch ms |
 
@@ -125,20 +218,21 @@ At the start of every turn, `MessageHandler.buildConfig()` reconstructs the full
 
 ```
 1. Load LMStoredConversation -> system instruction, preset, sampler config, tool names
-2. Load last HISTORY_LIMIT (10) messages -> sorted by seq ascending
-3. Map to SDK Message objects (user / model roles)
+2. Load last HISTORY_LIMIT (20) messages -> sorted by seq ascending
+3. Map to SDK Message objects (text-only — attachments not replayed)
 4. Build ConversationConfig(
        systemInstruction = ...,
        samplerConfig     = SamplerConfig(topK, topP, temperature),
        tools             = ToolRegistry.getToolProviders(toolNames),
-       initialMessages   = Contents(messages)
+       initialMessages   = history
    )
 ```
 
 The engine re-opens a fresh `Conversation` with this config on every turn. This means:
 - History is always DB-authoritative — no in-memory conversation object survives between turns
-- History is capped at 10 messages to bound token consumption and inference latency
-- The 10-message window slides — oldest messages drop off as new ones are added
+- History is capped at 20 messages to bound token consumption and inference latency
+- The 20-message window slides — oldest messages drop off as new ones are added
+- Stateless conversations skip history load and persistence entirely
 
 ---
 
@@ -201,14 +295,33 @@ A reconnecting client after inference has already completed finds no job in the 
 
 ## WebSocket Protocol
 
-### Frame types (Server -> Client)
+### Client → Server frame
+
+```json
+{ "message": "Hello" }
+```
+
+With multimodal attachments:
+```json
+{
+  "message": "What is in this image?",
+  "images": ["data:image/png;base64,iVBOR...", "data:image/jpeg;base64,..."],
+  "audio":  ["data:audio/wav;base64,UklGR..."]
+}
+```
+
+- `images` and `audio` are lists of base64-encoded strings
+- Data-URI prefix (`data:image/png;base64,`) is supported and stripped automatically
+- Plain base64 without a data-URI prefix defaults to extension `bin`
+
+### Server → Client frames
 
 ```
 { "type": "queued",  "position": 2 }             -- task is queued (engine busy)
-{ "type": "busy" }                                 -- inference is running
-{ "type": "token",  "token": "partial text" }      -- streamed token (live)
-{ "type": "done",   "reply": "full reply text" }   -- turn complete (authoritative)
-{ "type": "error",  "error": "message" }           -- recoverable error
+{ "type": "busy" }                                -- inference is running
+{ "type": "token",  "token": "partial text" }     -- streamed token (live)
+{ "type": "done",   "reply": "full reply text" }  -- turn complete (authoritative)
+{ "type": "error",  "error": "message" }          -- recoverable error
 ```
 
 ### Token streaming architecture
@@ -221,7 +334,7 @@ engine-thread
 inferenceScope (Dispatchers.Default, detached)
     engineHandler.submit(task).collect {
         Token -> onToken() -> replyBuffer.append + tokenFlow.tryEmit
-        Done  -> persist to DB -> completionDeferred.complete(reply)
+        Done  -> persist to DB (userText + attachmentRefs) -> completionDeferred.complete(reply)
     }
               |                              |
               | completionDeferred           | tokenFlow
@@ -250,6 +363,8 @@ Client --WS message--> RouteWebSocket
                             v
                        ConversationHandler.sendMessage()
                             | state = IDLE
+                            |-- build Contents (text [+ image/audio bytes])
+                            |-- save attachments to disk (AttachmentStore)
                             |-- startJob(name)        -> BUSY
                             |-- launch detached coroutine
                             |       +-- EngineHandler.submit(task).collect { ... }
@@ -275,6 +390,7 @@ Client --WS message--> RouteWebSocket
 ```
 Client --WS message--> ConversationHandler.sendMessage()
                             |
+                            |-- build Contents + save attachments
                             |-- startJob(name) -> BUSY
                             |-- launch detached coroutine (task queued in taskChannel)
                             |-- engineHandler.getQueueSize() > 0
@@ -306,7 +422,7 @@ Client disconnects     WS coroutine cancelled
                             |
                             v
                        inference completes
-                            |-- persist to DB
+                            |-- persist to DB (text + attachmentRefs)
                             +-- job removed from registry -> IDLE
                                (deferred resolved, but no one is awaiting it)
 
@@ -355,10 +471,11 @@ Client --WS message--> ConversationHandler.sendMessage()
 ### Flow 6: REST POST /messages (blocking)
 
 ```
-Client --POST--> RouteConversation.post("/{name}/messages")
+Client --POST multipart--> RouteConversation.post("/{name}/messages")
                             |
                             v
-                       ConversationHandler.sendMessage()
+                       ConversationHandler.sendMessage(message, attachments)
+                            |-- build Contents + save attachments
                             |-- startJob -> BUSY
                             +-- emit ConversationWsChunk.Busy
                             |
@@ -395,22 +512,29 @@ WS/REST handler awaiting deferred
 
 ```
 lm/
-|-- LMService.kt                     # Lifecycle: start, stop, register tools
+|-- LMService.kt                     # Lifecycle: setDao, setAppDir, start, stop, register tools
 |-- conversation/
 |   |-- ConversationJob.kt           # Job data: state, replyBuffer, deferred, tokenFlow, watchdog
 |   |-- ConversationJobRegistry.kt   # State machine + watchdog timer (singleton)
 |   +-- ConversationWsChunk.kt       # sealed: Token, Done, Error, Queued, Busy
+|-- attachment/
+|   |-- AttachmentRef.kt             # AttachmentType enum, AttachmentRef data class
+|   |                                # toColumnValue() / toAttachmentRefs() helpers
+|   +-- AttachmentStore.kt           # File I/O: save, absolutePath, deleteConversation
 |-- handler/
 |   |-- ConversationHandler.kt       # Orchestration: create, update, delete, sendMessage
+|   |                                # IncomingAttachment data class lives here
 |   |-- EngineHandler.kt             # Single engine, dedicated thread, task queue, QueueEntry
+|   |                                # ConversationTask: contents: Contents (not String)
 |   +-- MessageHandler.kt            # DB persistence: config, history, buildConfig()
+|                                    # Injected with AttachmentStore
 |-- entity/
 |   |-- LMStoredConversation.kt      # DB row: config, sampler, tools, stateless
-|   +-- LMStoredMessage.kt           # DB row: role, text, seq, createdAt
+|   +-- LMStoredMessage.kt           # DB row: role, text, attachments (nullable), seq, createdAt
 |-- builtin/
 |   +-- BuiltinConversationConfig.kt # Preset definitions: ASSISTANT, CODER, CONCISE, CREATIVE
 +-- tool/
     |-- GatewayOpenApiTool.kt
     |-- ToolRegistry.kt
-    +-- builtin/                     # DateTimeTool, CalculatorTool, LiteRTLMDocsTool
+    +-- builtin/                     # DateTimeTool, CalculatorTool
 ```
