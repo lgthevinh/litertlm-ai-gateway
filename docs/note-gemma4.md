@@ -47,6 +47,7 @@
 - Có thể tích hợp MCP với gemma4 nhưng phải sử dụng lib python để gọi MCP (hiện tại chưa hỗ trợ cho windows, java chưa test với mcp sdk nhưng khả năng sẽ phải viết interface). Vẫn ưu tiên sử dụng MAC nhất.
 - Tích hợp github, jira, trello thì sẽ phải viết tool riêng để gọi API của từng tool, nếu cùng hệ thống (ví dụ như hệ Atlassian) thì có thể tái sử dụng code cho các tool còn lại, tuy nhiên sẽ tốn công để viết tool cho từng hệ thống khác nhau (ví dụ như Microsoft Planner, Google Calendar...)
 - Hiện tại mới chỉ test các tool đơn giản như đọc tài liệu từ folder, nhưng 2 môn hình đều không có vấn đề gì khi được instruct rõ ràng, instruct không rõ ràng thì model sẽ không biết gọi tool gì. Ngoài ra phần description cho tool cũng phải rõ ràng, nhưng cân bằng đủ lượng token model phải xử lý
+- Kiến trúc recommend: Đặt model tại cloud, làm MCP server và client cho việc stream dữ liệu tài liệu về, tăng history limit và cache tài liệu
 
 ### Bài toán normalize data trong data pipeline (cá nhân) (đã test với khoảng trên 2000 tên sản phẩm)
 - Sử dụng mô hình gemma4 e2b cấu hình máy 2, sử dụng với việc normalize tên các sản phẩm công nghệ để đưa các sản phẩm về 1 format chung với output json. Kết quả tương đối hài lòng (tốn khoảng 1p để sử lý batch 10 tên sản phẩm) không sử dụng context.
