@@ -42,7 +42,6 @@ fun Route.config() {
                     }.getOrNull()?.let { arr.add(it) }
                 }
             }
-            }
             val response = JsonObject().apply {
                 addProperty("ok", true)
                 add("tools", arr)

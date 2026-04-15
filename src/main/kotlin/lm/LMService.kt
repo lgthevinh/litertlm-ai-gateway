@@ -115,7 +115,6 @@ object LMService {
      * Called once after engine initialization succeeds.
      */
     private fun registerBuiltinTools() {
-        ToolRegistry.register(DatetimeTool())
         ToolRegistry.register(LMToolSet())
         ToolRegistry.register(RogoToolSet())
         ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.listAll().size} tools registered")

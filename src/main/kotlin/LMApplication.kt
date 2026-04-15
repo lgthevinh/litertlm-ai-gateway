@@ -63,7 +63,8 @@ object LMApplication : Service() {
                 modelPath    = "./model/gemma4-e2b/gemma-4-E2B-it.litertlm",
                 backend      = Backend.CPU(),
                 audioBackend = Backend.CPU(),
-                visionBackend = Backend.CPU()
+                visionBackend = Backend.CPU(),
+                cacheDir = "./model/model_cache"
             )
         )
         LMService.start { success ->

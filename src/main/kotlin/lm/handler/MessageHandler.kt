@@ -51,7 +51,7 @@ class MessageHandler(
             return false
         }
         return try {
-            dao.insert(record)
+            dao.insertOrUpdate(record)
             ILog.i(TAG, "saveConversation: '${record.name}' saved")
             true
         } catch (e: DaoException) {
@@ -191,7 +191,7 @@ class MessageHandler(
     ) {
         val now = System.currentTimeMillis()
         try {
-            dao.insert(
+            dao.insertOrUpdate(
                 LMStoredMessage(
                     id               = UUID.randomUUID().toString(),
                     conversationName = conversationName,
@@ -202,7 +202,7 @@ class MessageHandler(
                     createdAt        = now
                 )
             )
-            dao.insert(
+            dao.insertOrUpdate(
                 LMStoredMessage(
                     id               = UUID.randomUUID().toString(),
                     conversationName = conversationName,

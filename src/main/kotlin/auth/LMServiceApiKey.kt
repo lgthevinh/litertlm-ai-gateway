@@ -57,7 +57,7 @@ class LMServiceApiKey(private val dao: DaoSqlite) {
         )
 
         return try {
-            dao.insert(record)
+            dao.insertOrUpdate(record)
             ILog.i(TAG, "API key created: prefix=${record.keyPrefix}, name=$name")
             LMApiKeyResult(record, rawKey)
         } catch (e: DaoException) {
