@@ -32,6 +32,9 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:3.43.2.0")
     implementation("com.zaxxer:HikariCP:5.1.0")
     implementation("com.google.code.gson:gson:2.13.2")
+
+    // mcp core without json, use gson instead
+    implementation("io.modelcontextprotocol.sdk:mcp-core:1.1.1")
 }
 
 kotlin {

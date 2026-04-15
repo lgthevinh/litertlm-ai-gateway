@@ -35,10 +35,13 @@ fun Route.config() {
         // Returns the OpenAPI schema JSON for each tool directly.
         get("/tools") {
             val arr = JsonArray()
-            ToolRegistry.listAll().forEach { gatewayTool ->
-                runCatching {
-                    JsonParser.parseString(gatewayTool.getToolDescriptionJsonString()).asJsonObject
-                }.getOrNull()?.let { arr.add(it) }
+            ToolRegistry.listAll().forEach { toolSet ->
+                toolSet.tools.forEach { tool ->
+                    runCatching {
+                        JsonParser.parseString(tool.getToolDescriptionJsonString()).asJsonObject
+                    }.getOrNull()?.let { arr.add(it) }
+                }
+            }
             }
             val response = JsonObject().apply {
                 addProperty("ok", true)

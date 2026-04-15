@@ -7,10 +7,8 @@ import org.thingai.app.aigateway.lm.handler.EngineHandler
 import org.thingai.app.aigateway.lm.handler.MessageHandler
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.tool.ToolRegistry
-import org.thingai.app.aigateway.lm.tool.builtin.DatetimeTool
-import org.thingai.app.aigateway.lm.tool.builtin.LMServiceTool
-import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoListDocsTool
-import org.thingai.app.aigateway.lm.tool.builtin.rogotools.RogoReadDocTool
+import org.thingai.app.aigateway.lm.tool.builtin.LMToolSet
+import org.thingai.app.aigateway.lm.tool.builtin.RogoToolSet
 import org.thingai.base.log.ILog
 import org.thingai.platform.dao.DaoSqlite
 import java.io.File
@@ -118,9 +116,8 @@ object LMService {
      */
     private fun registerBuiltinTools() {
         ToolRegistry.register(DatetimeTool())
-        ToolRegistry.register(LMServiceTool())
-        ToolRegistry.register(RogoListDocsTool())
-        ToolRegistry.register(RogoReadDocTool())
+        ToolRegistry.register(LMToolSet())
+        ToolRegistry.register(RogoToolSet())
         ILog.i(TAG, "registerBuiltinTools: ${ToolRegistry.listAll().size} tools registered")
     }
 }

@@ -5,57 +5,38 @@ import com.google.ai.edge.litertlm.tool
 import org.thingai.base.log.ILog
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Global registry of available [GatewayOpenApiTool] instances.
- *
- * Tools are registered at application startup and looked up at config-build time.
- * Thread-safe — backed by [ConcurrentHashMap].
- */
 object ToolRegistry {
 
     private const val TAG = "ToolRegistry"
 
-    private val tools = ConcurrentHashMap<String, GatewayOpenApiTool>()
+    private val registry = ConcurrentHashMap<String, GatewayOpenApiToolSet>()
 
-    /** Registers a tool. Overwrites any existing tool with the same name. */
-    fun register(tool: GatewayOpenApiTool) {
-        tools[tool.name] = tool
-        ILog.i(TAG, "register: '${tool.name}' registered")
+    fun register(toolSet: GatewayOpenApiToolSet) {
+        registry[toolSet.name] = toolSet
+        ILog.i(TAG, "register: '${toolSet.name}'")
     }
 
-    /** Unregisters a tool by name. Returns true if it existed. */
     fun unregister(name: String): Boolean {
-        val removed = tools.remove(name) != null
-        if (removed) ILog.i(TAG, "unregister: '$name' removed")
+        val removed = registry.remove(name) != null
+        if (removed) ILog.i(TAG, "unregister: '$name'")
         return removed
     }
 
-    /** Returns a single [GatewayOpenApiTool] by name, or null if not registered. */
-    fun get(name: String): GatewayOpenApiTool? = tools[name]
+    fun get(name: String): GatewayOpenApiToolSet? = registry[name]
 
-    /**
-     * Resolves the given names to registered tools and wraps each with the SDK `tool()` function,
-     * returning a [List<ToolProvider>] ready for [com.google.ai.edge.litertlm.ConversationConfig.tools].
-     * Unknown names are silently skipped with a warning log.
-     */
     fun getToolProviders(names: List<String>): List<ToolProvider> {
-        return names.mapNotNull { name ->
-            val gatewayTool = tools[name]
-            if (gatewayTool == null) {
-                ILog.w(TAG, "getToolProviders: tool '$name' not registered — skipping")
-                null
-            } else {
-                tool(gatewayTool)
-            }
+        return names.flatMap { name ->
+            val toolSet = registry[name]
+            if (toolSet != null) return@flatMap toolSet.tools.map { tool(it) }
+            ILog.w(TAG, "getToolProviders: '$name' not registered — skipping")
+            emptyList()
         }
     }
 
-    /** Returns all registered [GatewayOpenApiTool] instances sorted by name. */
-    fun listAll(): List<GatewayOpenApiTool> = tools.values.sortedBy { it.name }
+    fun listAll(): List<GatewayOpenApiToolSet> = registry.values.sortedBy { it.name }
 
-    /** Clears all registered tools. Called on [org.thingai.app.aigateway.engine.LMService.stop]. */
     fun clear() {
-        tools.clear()
+        registry.clear()
         ILog.d(TAG, "clear: all tools removed")
     }
 }

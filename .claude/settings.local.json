@@ -15,7 +15,8 @@
       "Read(//mnt/e/dev_thingai/**)",
       "Bash(./gradlew buildFatJar)",
       "WebSearch",
-      "WebFetch(domain:api.ktor.io)"
+      "WebFetch(domain:api.ktor.io)",
+      "WebFetch(domain:central.sonatype.com)"
     ]
   }
 }
