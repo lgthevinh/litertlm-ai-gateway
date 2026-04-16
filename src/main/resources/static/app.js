@@ -13,6 +13,7 @@ const state = {
   editTarget:        null,
   statelessMap:      {},     // { convName: boolean } — populated by renderConvList
   pendingAttachments: [],    // [{ file, dataUrl, type }] — staged before send
+  availableTools:    null,   // [{ set, name, description }] — cached from GET /api/tools
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -124,6 +125,7 @@ function enterApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   document.getElementById('nav-username').textContent = state.username;
+  loadAvailableTools();
   showPage('conversations');
 }
 
@@ -586,6 +588,51 @@ function initDocsSectionNav() {
   });
 }
 
+// ── Tools ─────────────────────────────────────────────────────────────
+
+async function loadAvailableTools() {
+  try {
+    const res = await fetch('/api/tools');
+    const data = await res.json();
+    state.availableTools = (data.tools || []);
+  } catch (_) {
+    state.availableTools = [];
+  }
+}
+
+/**
+ * Renders tool checkboxes into `containerId`.
+ * Groups individual tools under their set name — one checkbox per set.
+ * `checkedSets` is an array of set names that should start checked.
+ */
+function renderToolCheckboxes(containerId, checkedSets = []) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const tools = state.availableTools;
+  if (!tools || !tools.length) {
+    container.innerHTML = '<span class="tools-loading">No tools available.</span>';
+    return;
+  }
+
+  // Group by set name, collect tool names for the label
+  const sets = {};
+  tools.forEach(t => {
+    if (!sets[t.set]) sets[t.set] = [];
+    sets[t.set].push(t.name);
+  });
+
+  container.innerHTML = Object.entries(sets).map(([setName, toolNames]) => {
+    const checked  = checkedSets.includes(setName) ? ' checked' : '';
+    const subtitle = toolNames.join(', ');
+    return `<label class="nc-tool-check" title="${esc(subtitle)}">` +
+           `<input type="checkbox" value="${esc(setName)}"${checked}> ` +
+           `<span class="tool-set-name">${esc(setName)}</span>` +
+           `<span class="tool-set-tools">${esc(subtitle)}</span>` +
+           `</label>`;
+  }).join('');
+}
+
 // ── New conversation modal ────────────────────────────────────────────
 function openNewConvModal() {
   document.getElementById('nc-name').value        = '';
@@ -595,7 +642,7 @@ function openNewConvModal() {
   document.getElementById('nc-topk').value        = '';
   document.getElementById('nc-topp').value        = '';
   document.getElementById('nc-temperature').value = '';
-  document.querySelectorAll('#nc-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  renderToolCheckboxes('nc-tools-row');
   document.getElementById('nc-stateless').checked            = false;
   document.getElementById('nc-stateless-warning').style.display = 'none';
   setAlert(document.getElementById('nc-err'), null);
@@ -669,7 +716,7 @@ function openEditConvModal(evt, name) {
   document.getElementById('ec-topk').value        = '';
   document.getElementById('ec-topp').value        = '';
   document.getElementById('ec-temperature').value = '';
-  document.querySelectorAll('#ec-tools-row input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  renderToolCheckboxes('ec-tools-row');
   setAlert(document.getElementById('ec-err'), null);
   document.getElementById('edit-conv-modal').classList.add('open');
 }

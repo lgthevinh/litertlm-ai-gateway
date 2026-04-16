@@ -32,14 +32,21 @@ fun Route.config() {
 
     route("/api") {
         // GET /api/tools — list all registered tools (public, no auth)
-        // Returns the OpenAPI schema JSON for each tool directly.
+        // Returns { ok, tools: [{ set, name, description }] }
+        // `set` is the registry key used when binding tools to a conversation.
         get("/tools") {
             val arr = JsonArray()
             ToolRegistry.listAll().forEach { toolSet ->
                 toolSet.tools.forEach { tool ->
                     runCatching {
                         JsonParser.parseString(tool.getToolDescriptionJsonString()).asJsonObject
-                    }.getOrNull()?.let { arr.add(it) }
+                    }.getOrNull()?.let { schema ->
+                        arr.add(JsonObject().apply {
+                            addProperty("set",         toolSet.name)
+                            addProperty("name",        schema.get("name")?.asString ?: "")
+                            addProperty("description", schema.get("description")?.asString ?: "")
+                        })
+                    }
                 }
             }
             val response = JsonObject().apply {

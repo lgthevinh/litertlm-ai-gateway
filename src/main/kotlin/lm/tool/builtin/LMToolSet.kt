@@ -12,7 +12,7 @@ import java.time.format.DateTimeFormatter
 
 class LMToolSet : GatewayOpenApiToolSet {
     override val name  = "litertlm-docs"
-    override val tools = listOf(LMDocsListTool(), LMDocsGetTool(), DatetimeTool())
+    override val tools: Collection<OpenApiTool> = listOf(LMDocsListTool(), LMDocsGetTool(), DatetimeTool())
 }
 
 // ── lm_docs_list ──────────────────────────────────────────────────────────────

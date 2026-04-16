@@ -64,7 +64,6 @@ object LMApplication : Service() {
                 backend      = Backend.CPU(),
                 audioBackend = Backend.CPU(),
                 visionBackend = Backend.CPU(),
-                cacheDir = "./model/model_cache"
             )
         )
         LMService.start { success ->

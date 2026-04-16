@@ -11,7 +11,7 @@ import java.io.File
 
 class RogoToolSet : GatewayOpenApiToolSet {
     override val name  = "rogo"
-    override val tools = listOf(RogoListTool(), RogoReadTool())
+    override val tools: Collection<OpenApiTool> = listOf(RogoListTool(), RogoReadTool())
 }
 
 // ── rogo_list ─────────────────────────────────────────────────────────────────
