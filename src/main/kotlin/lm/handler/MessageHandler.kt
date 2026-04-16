@@ -281,7 +281,7 @@ class MessageHandler(
             val all = dao.query(LMStoredMessage::class.java, "conversationName", conversationName)
             all.sortedBy { it.seq }
                 .takeLast(HISTORY_LIMIT)
-                .map { it.toMessage(conversationName, attachmentStore) }
+                .map { it.toMessage() }
         } catch (e: DaoException) {
             ILog.e(TAG, "loadHistory: DB error: ${e.message}")
             emptyList()
@@ -301,8 +301,8 @@ class MessageHandler(
         record: LMStoredConversation,
         history: List<Message>
     ): ConversationConfig {
-        val systemInstruction = record.systemInstruction?.takeIf { it.isNotBlank() }
-            ?: builtinInstruction(record.configLabel)
+        val systemInstruction = record.systemInstruction?.takeIf { it.isNotBlank() }?.trimIndent()
+            ?: builtinInstruction(record.configLabel).trimIndent()
 
         // Resolve tool names → List<ToolProvider> via ToolRegistry + SDK tool()
         val toolNames = record.tools
@@ -357,10 +357,7 @@ class MessageHandler(
  * files on every conversation re-open and sidesteps model instability with multimodal
  * history replay.  The attachment files remain on disk and are still served via the API.
  */
-private fun LMStoredMessage.toMessage(
-    conversationName: String,
-    attachmentStore: AttachmentStore?
-): Message = when (role) {
-    "model" -> Message.model(text)
-    else    -> Message.user(text)
+private fun LMStoredMessage.toMessage(): Message = when (role) {
+    "model" -> Message.model(text.trimIndent())
+    else    -> Message.user(text.trimIndent())
 }
