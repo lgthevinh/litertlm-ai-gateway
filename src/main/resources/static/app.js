@@ -2,18 +2,19 @@
 // State
 // ═══════════════════════════════════════════════════════════════════════
 const state = {
-  accessToken:       null,
-  refreshToken:      null,
-  username:          null,
-  activeConv:        null,
-  ws:                null,
-  streaming:         false,
-  messages:          {},
-  revokeTarget:      null,
-  editTarget:        null,
-  statelessMap:      {},     // { convName: boolean } — populated by renderConvList
-  pendingAttachments: [],    // [{ file, dataUrl, type }] — staged before send
-  availableTools:    null,   // [{ set, name, description }] — cached from GET /api/tools
+  accessToken:          null,
+  refreshToken:         null,
+  username:             null,
+  activeConv:           null,
+  ws:                   null,
+  streaming:            false,
+  messages:             {},
+  revokeTarget:         null,
+  editTarget:           null,
+  thinkingMap:          {},     // { convName: boolean } — current thinkingEnabled per conv
+  pendingAttachments:   [],     // [{ file, dataUrl, type }] — staged before send
+  availableTools:       null,   // [{ set, name, description }] — cached from GET /api/tools
+  perMessageThinking:   null,   // Boolean? — override for the next message only, then resets
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -50,21 +51,6 @@ window.addEventListener('DOMContentLoaded', () => {
   chatInput.addEventListener('input', () => {
     chatInput.style.height = 'auto';
     chatInput.style.height = Math.min(chatInput.scrollHeight, 200) + 'px';
-  });
-
-  document.getElementById('nc-config').addEventListener('change', e => {
-    document.getElementById('nc-system-field').style.display =
-      e.target.value === 'custom' ? 'block' : 'none';
-  });
-
-  document.getElementById('nc-stateless').addEventListener('change', e => {
-    document.getElementById('nc-stateless-warning').style.display =
-      e.target.checked ? 'block' : 'none';
-  });
-
-  document.getElementById('ec-config').addEventListener('change', e => {
-    document.getElementById('ec-system-field').style.display =
-      e.target.value === 'custom' ? 'block' : 'none';
   });
 });
 
@@ -164,18 +150,17 @@ function renderConvList(convs) {
     return;
   }
   el.innerHTML = convs.map(c => {
-    const n  = c.name;
-    const sl = c.stateless;
+    const n = c.name;
     return '<div class="conv-item ' + (n === state.activeConv ? 'active' : '') + '" onclick="selectConv(\'' + esc(n) + '\')">' +
-      '<span>' + esc(n) + (sl ? ' <span class="conv-stateless-dot" title="Stateless"></span>' : '') + '</span>' +
+      '<span>' + esc(n) + '</span>' +
       '<div class="conv-item-actions">' +
       '<span class="edit-conv" onclick="openEditConvModal(event,\'' + esc(n) + '\')" title="Edit">&#9998;</span>' +
       '<span class="del-conv"  onclick="deleteConv(event,\'' + esc(n) + '\')"        title="Delete">&times;</span>' +
       '</div>' +
       '</div>';
   }).join('');
-  // Keep stateless map in sync for toolbar badge
-  state.statelessMap = Object.fromEntries(convs.map(c => [c.name, c.stateless]));
+  // Track thinking state per conversation
+  state.thinkingMap = Object.fromEntries(convs.map(c => [c.name, c.thinkingEnabled !== false]));
 }
 
 function selectConv(name) {
@@ -184,19 +169,17 @@ function selectConv(name) {
   state.streaming  = false;
   state.activeConv = name;
 
-  // Clear pending attachments when switching conversations
-  state.pendingAttachments = [];
+  // Clear pending attachments and per-message thinking override when switching
+  state.pendingAttachments  = [];
+  state.perMessageThinking  = null;
   renderAttachPreview();
 
   document.getElementById('conv-title').textContent = name;
 
-  // Stateless badge
-  const badge = document.getElementById('stateless-badge');
-  if (state.statelessMap && state.statelessMap[name]) {
-    badge.style.display = 'inline-flex';
-  } else {
-    badge.style.display = 'none';
-  }
+  // Show toolbar thinking button and sync its state
+  const toolbarBtn = document.getElementById('thinking-toolbar-btn');
+  toolbarBtn.style.display = 'inline-flex';
+  syncThinkingToolbarBtn(name);
 
   document.getElementById('send-btn').disabled   = true;
   document.getElementById('chat-input').disabled = true;
@@ -355,12 +338,11 @@ function connectWs(name) {
   state.ws    = ws;
 
   ws.onopen = function() {
-    // Only activate input if this socket is still the active one for this conversation
     if (state.ws === ws && state.activeConv === name) {
       setWsStatus('connected');
-      // Don't enable input yet if a job is BUSY — the server will send busy/done frames
       if (!state.streaming) {
         setInputEnabled(true);
+        syncThinkBtn();
         document.getElementById('chat-input').focus();
       }
     }
@@ -404,6 +386,36 @@ function handleWsFrame(convName, frame) {
     return;
   }
 
+  // ── Agent frames ─────────────────────────────────────────────────────
+  if (frame.type === 'agent_thinking') {
+    updateThinkingBubble(box, 'Step ' + (frame.stepIndex + 1) + ': Thinking\u2026');
+    return;
+  }
+
+  if (frame.type === 'agent_tool_call') {
+    updateThinkingBubble(box, 'Calling tool: ' + frame.toolName + '\u2026');
+    appendAgentStep(box, 'tool-call',
+      '\uD83D\uDD27 ' + frame.toolName,
+      frame.params
+    );
+    return;
+  }
+
+  if (frame.type === 'agent_tool_result') {
+    updateThinkingBubble(box, 'Got result, reasoning\u2026');
+    appendAgentStep(box, 'tool-result',
+      '\u2714 ' + frame.toolName,
+      frame.result
+    );
+    return;
+  }
+
+  if (frame.type === 'agent_max_steps') {
+    updateThinkingBubble(box, 'Max steps reached');
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────────────
+
   if (frame.type === 'token') {
     // First token — swap thinking bubble for streaming bubble
     const thinking = box.querySelector('.thinking-bubble');
@@ -422,12 +434,12 @@ function handleWsFrame(convName, frame) {
   }
 
   if (frame.type === 'done') {
-    // Remove in-progress bubble — use authoritative reply from done frame
     const inProgress = box.querySelector('.streaming-bubble') || box.querySelector('.thinking-bubble');
     if (inProgress) inProgress.remove();
 
     state.streaming = false;
     setInputEnabled(true);
+    syncThinkBtn();
 
     const reply = frame.reply || '';
     if (reply) appendMessage(convName, 'model', reply);
@@ -459,6 +471,7 @@ function setInputEnabled(enabled) {
   document.getElementById('send-btn').disabled    = !enabled;
   document.getElementById('chat-input').disabled  = !enabled;
   document.getElementById('attach-btn').disabled  = !enabled;
+  document.getElementById('think-btn').disabled   = !enabled;
 }
 
 // ── File attachment ───────────────────────────────────────────────────
@@ -525,6 +538,13 @@ function sendMessage() {
   if (images.length) payload.images = images;
   if (audio.length)  payload.audio  = audio;
 
+  // Include per-message thinking override if set, then reset it
+  if (state.perMessageThinking !== null) {
+    payload.thinking = state.perMessageThinking;
+    state.perMessageThinking = null;
+    syncThinkBtn();  // reset button visual back to conv default
+  }
+
   // Render user message with attachment previews
   appendMessageWithAttachments(state.activeConv, 'user', text, attachments);
   state.streaming = true;
@@ -564,6 +584,57 @@ function showThinkingBubble(box) {
 function removeThinkingBubble(box) {
   const bubble = box.querySelector('.thinking-bubble');
   if (bubble) bubble.remove();
+}
+
+/**
+ * Updates the status text inside the thinking bubble.
+ * Used to show agent step progress (e.g. "Calling tool: datetime…").
+ */
+function updateThinkingBubble(box, text) {
+  const bubble = box.querySelector('.thinking-bubble .msg-bubble');
+  if (bubble) {
+    bubble.textContent = text;
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+/**
+ * Appends a collapsible agent step row (tool call or tool result) inside
+ * the thinking bubble so the user can inspect what the agent did.
+ */
+function appendAgentStep(box, type, label, detail) {
+  const thinking = box.querySelector('.thinking-bubble');
+  if (!thinking) return;
+
+  // Ensure the steps container exists inside the thinking bubble
+  let steps = thinking.querySelector('.agent-steps');
+  if (!steps) {
+    steps = document.createElement('div');
+    steps.className = 'agent-steps';
+    thinking.appendChild(steps);
+  }
+
+  const step = document.createElement('div');
+  step.className = 'agent-step agent-step-' + type;
+
+  const header = document.createElement('div');
+  header.className = 'agent-step-header';
+  header.textContent = label;
+  header.onclick = () => step.classList.toggle('expanded');
+
+  const body = document.createElement('div');
+  body.className = 'agent-step-body';
+  // Pretty-print JSON if possible, otherwise raw string
+  try {
+    body.textContent = JSON.stringify(JSON.parse(detail), null, 2);
+  } catch (_) {
+    body.textContent = detail;
+  }
+
+  step.appendChild(header);
+  step.appendChild(body);
+  steps.appendChild(step);
+  box.scrollTop = box.scrollHeight;
 }
 /**
  * Wires the in-page anchor links in the docs section so they scroll the
@@ -635,16 +706,13 @@ function renderToolCheckboxes(containerId, checkedSets = []) {
 
 // ── New conversation modal ────────────────────────────────────────────
 function openNewConvModal() {
-  document.getElementById('nc-name').value        = '';
-  document.getElementById('nc-config').value      = 'assistant';
-  document.getElementById('nc-system').value      = '';
-  document.getElementById('nc-system-field').style.display = 'none';
-  document.getElementById('nc-topk').value        = '';
-  document.getElementById('nc-topp').value        = '';
-  document.getElementById('nc-temperature').value = '';
+  document.getElementById('nc-name').value = '';
+  // Reset thinking toggle to ON
+  const btn = document.getElementById('nc-thinking-btn');
+  btn.textContent = 'ON';
+  btn.classList.add('active');
+  btn.dataset.thinking = 'true';
   renderToolCheckboxes('nc-tools-row');
-  document.getElementById('nc-stateless').checked            = false;
-  document.getElementById('nc-stateless-warning').style.display = 'none';
   setAlert(document.getElementById('nc-err'), null);
   document.getElementById('new-conv-modal').classList.add('open');
   setTimeout(() => document.getElementById('nc-name').focus(), 50);
@@ -654,13 +722,8 @@ function closeNewConvModal() {
 }
 
 async function createConversation() {
-  const name   = document.getElementById('nc-name').value.trim();
-  const config = document.getElementById('nc-config').value;
-  const system = document.getElementById('nc-system').value.trim();
-  const topK   = document.getElementById('nc-topk').value.trim();
-  const topP   = document.getElementById('nc-topp').value.trim();
-  const temp   = document.getElementById('nc-temperature').value.trim();
-  const errEl  = document.getElementById('nc-err');
+  const name  = document.getElementById('nc-name').value.trim();
+  const errEl = document.getElementById('nc-err');
   setAlert(errEl, null);
 
   if (!name) { setAlert(errEl, 'Name is required.'); return; }
@@ -668,16 +731,15 @@ async function createConversation() {
   const tools = Array.from(document.querySelectorAll('#nc-tools-row input[type="checkbox"]:checked'))
     .map(cb => cb.value);
 
-  const body = { name, tools: tools.length ? tools : undefined };
-  if (config === 'custom') {
-    if (system) body.systemInstruction = system;
-  } else {
-    body.config = config;
-  }
-  if (topK) body.topK        = parseInt(topK, 10);
-  if (topP) body.topP        = parseFloat(topP);
-  if (temp) body.temperature = parseFloat(temp);
-  if (document.getElementById('nc-stateless').checked) body.stateless = true;
+  const thinkingBtn = document.getElementById('nc-thinking-btn');
+  const thinkingEnabled = thinkingBtn.dataset.thinking !== 'false';
+
+  const body = {
+    name,
+    config: 'agent',
+    tools: tools.length ? tools : undefined,
+    thinkingEnabled
+  };
 
   try {
     const res = await authApi('/conversations', 'POST', body);
@@ -710,12 +772,6 @@ async function deleteConv(evt, name) {
 function openEditConvModal(evt, name) {
   evt.stopPropagation();
   state.editTarget = name;
-  document.getElementById('ec-config').value = '';
-  document.getElementById('ec-system').value = '';
-  document.getElementById('ec-system-field').style.display = 'none';
-  document.getElementById('ec-topk').value        = '';
-  document.getElementById('ec-topp').value        = '';
-  document.getElementById('ec-temperature').value = '';
   renderToolCheckboxes('ec-tools-row');
   setAlert(document.getElementById('ec-err'), null);
   document.getElementById('edit-conv-modal').classList.add('open');
@@ -732,43 +788,94 @@ async function saveEditConv() {
   const name = state.editTarget;
   if (!name) return;
 
-  const configVal = document.getElementById('ec-config').value;
-  const systemVal = document.getElementById('ec-system').value.trim();
-  const topKVal   = document.getElementById('ec-topk').value.trim();
-  const topPVal   = document.getElementById('ec-topp').value.trim();
-  const tempVal   = document.getElementById('ec-temperature').value.trim();
-
   const checkedTools = Array.from(document.querySelectorAll('#ec-tools-row input[type="checkbox"]'));
-  const toolsChanged = checkedTools.some(cb => !cb.indeterminate);
-  const tools = toolsChanged
-    ? checkedTools.filter(cb => cb.checked).map(cb => cb.value)
-    : undefined;
+  const anyChecked   = checkedTools.some(cb => cb.checked);
+  const tools        = anyChecked ? checkedTools.filter(cb => cb.checked).map(cb => cb.value) : undefined;
 
-  const body = {};
-  if (configVal === 'custom') {
-    if (systemVal) body.systemInstruction = systemVal;
-  } else if (configVal === '_clear') {
-    body.clearSystemInstruction = true;
-  } else if (configVal) {
-    body.config = configVal;
-  }
-  if (topKVal) body.topK        = parseInt(topKVal, 10);
-  if (topPVal) body.topP        = parseFloat(topPVal);
-  if (tempVal) body.temperature = parseFloat(tempVal);
-  if (tools !== undefined) body.tools = tools;
-
-  if (!Object.keys(body).length) {
-    setAlert(errEl, 'Nothing to update.');
+  if (tools === undefined) {
+    setAlert(errEl, 'Select at least one tool to update, or cancel.');
     return;
   }
 
   try {
-    const res = await authApi('/conversations/' + encodeURIComponent(name), 'PATCH', body);
+    const res = await authApi('/conversations/' + encodeURIComponent(name), 'PATCH', { tools });
     if (!res.ok) { setAlert(errEl, res.error || 'Update failed.'); return; }
     closeEditConvModal();
     await loadConversations();
     if (state.activeConv === name) connectWs(name);
   } catch (e) { setAlert(errEl, e.message); }
+}
+
+
+// ── Thinking controls ─────────────────────────────────────────────────
+
+/** Syncs the toolbar thinking button label/style to the stored conv state. */
+function syncThinkingToolbarBtn(name) {
+  const enabled = state.thinkingMap[name] !== false;
+  const btn     = document.getElementById('thinking-toolbar-btn');
+  const label   = document.getElementById('thinking-toolbar-label');
+  if (!btn || !label) return;
+  label.textContent = enabled ? '⚡ Thinking ON' : '⚡ Thinking OFF';
+  btn.classList.toggle('thinking-on',  enabled);
+  btn.classList.toggle('thinking-off', !enabled);
+}
+
+/** Syncs the per-message ⚡ button in the input bar. */
+function syncThinkBtn() {
+  const name    = state.activeConv;
+  const convVal = name ? (state.thinkingMap[name] !== false) : true;
+  // If override is set, show that; otherwise show conv default
+  const effective = state.perMessageThinking !== null ? state.perMessageThinking : convVal;
+  const btn = document.getElementById('think-btn');
+  if (!btn) return;
+  btn.classList.toggle('think-active',   effective);
+  btn.classList.toggle('think-inactive', !effective);
+  btn.title = state.perMessageThinking !== null
+    ? 'Thinking override: ' + (effective ? 'ON' : 'OFF') + ' for next message (click to reset)'
+    : 'Click to override thinking for next message (currently ' + (effective ? 'ON' : 'OFF') + ')';
+}
+
+/** Toggle in new-conv modal. */
+function toggleNewConvThinking() {
+  const btn     = document.getElementById('nc-thinking-btn');
+  const current = btn.dataset.thinking !== 'false';
+  const next    = !current;
+  btn.dataset.thinking = String(next);
+  btn.textContent = next ? 'ON' : 'OFF';
+  btn.classList.toggle('active', next);
+}
+
+/** Permanently toggle thinking for the active conversation. */
+async function togglePermanentThinking() {
+  const name = state.activeConv;
+  if (!name) return;
+  const current = state.thinkingMap[name] !== false;
+  const next    = !current;
+  try {
+    const res = await authApi('/conversations/' + encodeURIComponent(name), 'PATCH', { thinkingEnabled: next });
+    if (!res.ok) return;
+    state.thinkingMap[name] = next;
+    // Reset per-message override — permanent change takes priority
+    state.perMessageThinking = null;
+    syncThinkingToolbarBtn(name);
+    syncThinkBtn();
+  } catch (_) {}
+}
+
+/** Toggle thinking for the next message only. */
+function togglePerMessageThinking() {
+  const name    = state.activeConv;
+  if (!name) return;
+  const convVal = state.thinkingMap[name] !== false;
+
+  if (state.perMessageThinking === null) {
+    // First click — flip from conv default
+    state.perMessageThinking = !convVal;
+  } else {
+    // Second click — reset override (back to conv default)
+    state.perMessageThinking = null;
+  }
+  syncThinkBtn();
 }
 
 

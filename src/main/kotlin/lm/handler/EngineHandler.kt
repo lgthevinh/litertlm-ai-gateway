@@ -12,8 +12,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import org.thingai.app.aigateway.lm.agent.AgentRunner
+import org.thingai.app.aigateway.lm.agent.AgentStep
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.app.aigateway.lm.attachment.AttachmentRef
+import org.thingai.app.aigateway.lm.tool.ToolRegistry
 import org.thingai.base.log.ILog
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.Executors
@@ -37,7 +40,18 @@ data class ConversationTask(
     val contents: Contents,
     val userText: String = "",
     val attachmentRefs: List<AttachmentRef> = emptyList(),
-    val reply: Channel<ConversationWsChunk> = Channel(Channel.UNLIMITED)
+    val reply: Channel<ConversationWsChunk> = Channel(Channel.UNLIMITED),
+    /** When true, [AgentRunner] is used for multi-step reasoning instead of single-shot inference. */
+    val agentMode: Boolean = false,
+    /** Maximum number of model calls in agent mode before giving up. Ignored when [agentMode] is false. */
+    val maxAgentSteps: Int = 8,
+    /**
+     * Per-message thinking override.
+     * null  = use conversation's stored [thinkingEnabled] (already baked into [config])
+     * The override is informational here — the actual <|think> injection happens in
+     * [MessageHandler.buildConfig] before the task is created.
+     */
+    val thinkingOverride: Boolean? = null
 )
 
 /**
@@ -183,33 +197,23 @@ class EngineHandler(private val engineConfig: EngineConfig) {
     }
 
     /**
-     * Runs a single [ConversationTask]:
-     * 1. Creates a transient [Conversation] from [task.config]
-     * 2. Streams tokens into [task.reply]
-     * 3. Sends [ConversationWsChunk.Done] on completion or [ConversationWsChunk.Error] on failure
-     * 4. Closes the [Conversation] to release engine resources
+     * Runs a single [ConversationTask].
+     *
+     * If [ConversationTask.agentMode] is true, delegates to [AgentRunner] for multi-step
+     * reasoning. Otherwise runs a single [Conversation.sendMessageAsync] call (original behaviour).
      *
      * Always runs on [engineThread] — same thread the engine was initialized on.
      */
     private suspend fun processTask(engine: Engine, task: ConversationTask) {
         var conversation: Conversation? = null
-        var inferenceError = false
         try {
             conversation = engine.createConversation(task.config)
 
-            conversation.sendMessageAsync(task.contents)
-                .catch { e ->
-                    ILog.e(TAG, "worker: inference error: ${e.message}")
-                    task.reply.send(ConversationWsChunk.Error(e.message ?: "Inference failed"))
-                    inferenceError = true
-                }
-                .collect { message ->
-                    task.reply.send(ConversationWsChunk.Token(message.toString()))
-                }
-
-            if (!inferenceError) {
-                task.reply.send(ConversationWsChunk.Done)
-                ILog.d(TAG, "worker: '${task.convName}' complete")
+            ILog.i(TAG, "processTask: '${task.convName}' agentMode=${task.agentMode}")
+            if (task.agentMode) {
+                processAgentTask(conversation, task)
+            } else {
+                processSingleShotTask(conversation, task)
             }
         } catch (e: Exception) {
             ILog.e(TAG, "worker: '${task.convName}' failed: ${e.message}")
@@ -217,6 +221,76 @@ class EngineHandler(private val engineConfig: EngineConfig) {
         } finally {
             runCatching { conversation?.close() }
             task.reply.close()
+        }
+    }
+
+    /**
+     * Original single-shot inference — one [Conversation.sendMessageAsync] call,
+     * streams tokens directly to [task.reply].
+     */
+    private suspend fun processSingleShotTask(conversation: Conversation, task: ConversationTask) {
+        var inferenceError = false
+        conversation.sendMessageAsync(task.contents)
+            .catch { e ->
+                ILog.e(TAG, "worker: inference error: ${e.message}")
+                task.reply.send(ConversationWsChunk.Error(e.message ?: "Inference failed"))
+                inferenceError = true
+            }
+            .collect { message ->
+                task.reply.send(ConversationWsChunk.Token(message.toString()))
+            }
+
+        if (!inferenceError) {
+            task.reply.send(ConversationWsChunk.Done)
+            ILog.d(TAG, "worker: '${task.convName}' single-shot complete")
+        }
+    }
+
+    /**
+     * Multi-step agent inference — runs [AgentRunner] which calls the model N times,
+     * executing tools between steps. Emits agent chunk types into [task.reply] so
+     * clients can observe each reasoning step.
+     *
+     * Final answer text is emitted as [ConversationWsChunk.Token] followed by
+     * [ConversationWsChunk.Done] — identical to single-shot from the client's perspective
+     * if they ignore the intermediate agent chunks.
+     */
+    private suspend fun processAgentTask(conversation: Conversation, task: ConversationTask) {
+        val runner = AgentRunner(
+            conversation  = conversation,
+            toolRegistry  = ToolRegistry,
+            maxSteps      = task.maxAgentSteps,
+            onStep        = { step ->
+                when (step) {
+                    is AgentStep.Thinking     -> task.reply.send(
+                        ConversationWsChunk.AgentThinking(step.text, stepIndex = step.stepIndex)
+                    )
+                    is AgentStep.ToolCall     -> task.reply.send(
+                        ConversationWsChunk.AgentToolCall(step.toolName, step.paramsJson)
+                    )
+                    is AgentStep.ToolResult   -> task.reply.send(
+                        ConversationWsChunk.AgentToolResult(step.toolName, step.result)
+                    )
+                    is AgentStep.FinalAnswer  -> {
+                        // Stream final answer as tokens (consistent with single-shot)
+                        task.reply.send(ConversationWsChunk.Token(step.text))
+                    }
+                    is AgentStep.MaxStepsReached -> {
+                        task.reply.send(ConversationWsChunk.AgentMaxSteps(step.lastOutput, step.maxSteps))
+                        // Emit last output as the answer fallback
+                        task.reply.send(ConversationWsChunk.Token(step.lastOutput))
+                    }
+                }
+            }
+        )
+
+        try {
+            runner.run(task.userText, task.contents)
+            task.reply.send(ConversationWsChunk.Done)
+            ILog.d(TAG, "worker: '${task.convName}' agent complete")
+        } catch (e: Exception) {
+            ILog.e(TAG, "worker: agent error for '${task.convName}': ${e.message}")
+            task.reply.send(ConversationWsChunk.Error(e.message ?: "Agent inference failed"))
         }
     }
 }

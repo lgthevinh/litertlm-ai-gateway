@@ -3,6 +3,7 @@ package org.thingai.app.aigateway.lm.builtin
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.SamplerConfig
+import org.thingai.app.aigateway.lm.agent.AgentSystemPrompt
 
 object BuiltinConversationConfig {
 
@@ -61,5 +62,18 @@ object BuiltinConversationConfig {
             "When given a prompt, explore it from an unexpected or interesting angle."
         ),
         samplerConfig = SamplerConfig(topK = 80, topP = 0.98, temperature = 1.2)
+    )
+
+    /**
+     * Reasoning agent — multi-step ReAct loop.
+     * Uses the ReAct system prompt to instruct the model to reason step by step,
+     * call tools when needed, and only answer when it has enough information.
+     *
+     * Pair with [agentMode = true] on [ConversationTask] to activate the gateway-owned loop.
+     * Low-ish temperature keeps reasoning structured and deterministic.
+     */
+    val AGENT: ConversationConfig = ConversationConfig(
+        systemInstruction = Contents.of(AgentSystemPrompt.REACT),
+        samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.4)
     )
 }

@@ -99,12 +99,13 @@ class ConversationHandler(
     fun createConversation(
         name: String,
         systemInstruction: String? = null,
-        configLabel: String = "assistant",
+        configLabel: String = "agent",
         topK: Int = 40,
         topP: Double = 0.95,
         temperature: Double = 0.8,
         tools: List<String> = emptyList(),
         stateless: Boolean = false,
+        thinkingEnabled: Boolean = true,
     ): Boolean {
         val record = LMStoredConversation(
             name              = name,
@@ -115,13 +116,15 @@ class ConversationHandler(
             temperature       = temperature,
             tools             = tools.takeIf { it.isNotEmpty() }?.joinToString(","),
             createdAt         = System.currentTimeMillis(),
-            stateless         = stateless
+            stateless         = stateless,
+            agentMode         = configLabel.trim().lowercase() == "agent",
+            thinkingEnabled   = thinkingEnabled
         )
         return messageHandler.saveConversation(record).also { created ->
             if (created) {
-                val toolsInfo = if (tools.isNotEmpty()) ", tools=$tools" else ""
-                val statelessInfo = if (stateless) ", stateless=true" else ""
-                ILog.i(TAG, "createConversation: '$name' created (config=$configLabel$toolsInfo$statelessInfo)")
+                val toolsInfo    = if (tools.isNotEmpty()) ", tools=$tools" else ""
+                val thinkingInfo = if (!thinkingEnabled) ", thinking=off" else ""
+                ILog.i(TAG, "createConversation: '$name' created (config=$configLabel$toolsInfo$thinkingInfo)")
             }
         }
     }
@@ -182,8 +185,8 @@ class ConversationHandler(
     fun hasConversation(name: String): Boolean =
         messageHandler.getConversation(name) != null
 
-    /** Returns all conversations as (name, stateless) pairs, newest-first. */
-    fun listConversations(): List<Pair<String, Boolean>> =
+    /** Returns all conversations as (name, stateless, agentMode) triples, newest-first. */
+    fun listConversations(): List<Triple<String, Boolean, Boolean>> =
         messageHandler.listConversations()
 
     /**
@@ -192,6 +195,16 @@ class ConversationHandler(
      */
     fun getHistory(name: String): List<LMStoredMessage> =
         messageHandler.getHistory(name)
+
+    /** Returns `true` if thinking is currently enabled for this conversation. */
+    fun isThinkingEnabled(name: String): Boolean = messageHandler.isThinkingEnabled(name)
+
+    /**
+     * Permanently toggles thinking for [name].
+     * @return false if the conversation does not exist.
+     */
+    fun setThinkingEnabled(name: String, enabled: Boolean): Boolean =
+        messageHandler.setThinkingEnabled(name, enabled)
 
     // ── Inference ─────────────────────────────────────────────────────────────
 
@@ -226,14 +239,18 @@ class ConversationHandler(
     fun sendMessage(
         name: String,
         message: String,
-        attachments: List<IncomingAttachment> = emptyList()
+        attachments: List<IncomingAttachment> = emptyList(),
+        thinkingOverride: Boolean? = null
     ): Flow<ConversationWsChunk> = flow {
         // 1. Guard — conversation must exist
-        val config = messageHandler.buildConfig(name)
+        val config = messageHandler.buildConfig(name, thinkingOverride)
         if (config == null) {
             emit(ConversationWsChunk.Error("Conversation '$name' not found"))
             return@flow
         }
+
+        val agentMode = messageHandler.isAgentMode(name)
+        ILog.i(TAG, "sendMessage: '$name' agentMode=$agentMode thinking=${thinkingOverride ?: messageHandler.isThinkingEnabled(name)}")
 
         // 2. Guard — reject if already BUSY
         if (ConversationJobRegistry.isBusy(name)) {
@@ -272,7 +289,8 @@ class ConversationHandler(
                 config         = config,
                 contents       = contents,
                 userText       = message,
-                attachmentRefs = attachmentRefs
+                attachmentRefs = attachmentRefs,
+                agentMode      = messageHandler.isAgentMode(name)
             )
 
             engineHandler.submit(task).collect { chunk ->
@@ -298,6 +316,13 @@ class ConversationHandler(
                     is ConversationWsChunk.Error -> {
                         ILog.e(TAG, "sendMessage: inference error for '$name': ${chunk.message}")
                         ConversationJobRegistry.onError(name, chunk.message)
+                    }
+                    // Agent step chunks — forward to agentFlow so WS clients can observe them
+                    is ConversationWsChunk.AgentThinking,
+                    is ConversationWsChunk.AgentToolCall,
+                    is ConversationWsChunk.AgentToolResult,
+                    is ConversationWsChunk.AgentMaxSteps -> {
+                        ConversationJobRegistry.getBusyJob(name)?.agentFlow?.tryEmit(chunk)
                     }
                     else -> Unit
                 }

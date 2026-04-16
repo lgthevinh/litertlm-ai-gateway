@@ -4,6 +4,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 
 /**
  * Represents the lifecycle state of an in-flight inference turn.
@@ -42,6 +43,15 @@ data class ConversationJob(
     val completionDeferred: CompletableDeferred<String> = CompletableDeferred(),
     val tokenFlow: MutableSharedFlow<String> = MutableSharedFlow(
         extraBufferCapacity = 256,
+        onBufferOverflow    = BufferOverflow.DROP_OLDEST
+    ),
+    /**
+     * Emits agent step chunks ([ConversationWsChunk.AgentThinking], [ConversationWsChunk.AgentToolCall],
+     * [ConversationWsChunk.AgentToolResult], [ConversationWsChunk.AgentMaxSteps]) as they occur
+     * during multi-step reasoning. Empty for non-agent conversations.
+     */
+    val agentFlow: MutableSharedFlow<ConversationWsChunk> = MutableSharedFlow(
+        extraBufferCapacity = 64,
         onBufferOverflow    = BufferOverflow.DROP_OLDEST
     ),
     @Volatile var watchdogJob: Job? = null,

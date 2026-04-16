@@ -52,7 +52,14 @@ fun Route.conversation() {
                 return@get
             }
 
-            val summaries = handler.listConversations().map { ConversationSummary(name = it.first, stateless = it.second) }
+            val summaries = handler.listConversations().map {
+                ConversationSummary(
+                    name            = it.first,
+                    stateless       = it.second,
+                    agentMode       = it.third,
+                    thinkingEnabled = handler.isThinkingEnabled(it.first)
+                )
+            }
             call.respondJson(JsonUtils.toJson(ListConversationsResponse(ok = true, conversations = summaries)))
         }
 
@@ -86,7 +93,7 @@ fun Route.conversation() {
             val configLabel = if (systemInstruction != null) {
                 "custom"
             } else {
-                req.config?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: "assistant"
+                req.config?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: "agent"
             }
 
             val tools = req.tools
@@ -99,7 +106,8 @@ fun Route.conversation() {
                 systemInstruction = systemInstruction,
                 configLabel       = configLabel,
                 tools             = tools,
-                stateless         = req.stateless ?: false
+                stateless         = req.stateless ?: false,
+                thinkingEnabled   = req.thinkingEnabled ?: true
             )
             if (!created) {
                 call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Conversation '$name' already exists")), HttpStatusCode.Conflict)
@@ -193,6 +201,7 @@ fun Route.conversation() {
 
             // Parse message and attachments based on content type
             var message: String? = null
+            var thinkingOverride: Boolean? = null
             val attachments = mutableListOf<IncomingAttachment>()
 
             val contentType = call.request.contentType()
@@ -232,6 +241,7 @@ fun Route.conversation() {
                 }
                 val req = runCatching { JsonUtils.fromJson(body, SendMessageRequest::class.java) }.getOrNull()
                 message = req?.message?.trim()
+                thinkingOverride = req?.thinking
             }
 
             if (message.isNullOrBlank()) {
@@ -243,7 +253,7 @@ fun Route.conversation() {
             var errorMessage: String? = null
             var reply: String? = null
 
-            handler.sendMessage(name, message!!, attachments).collect { chunk ->
+            handler.sendMessage(name, message!!, attachments, thinkingOverride).collect { chunk ->
                 when (chunk) {
                     is ConversationWsChunk.Busy  -> {
                         val busyJob = ConversationJobRegistry.getBusyJob(name)
@@ -317,6 +327,11 @@ fun Route.conversation() {
                 temperature            = req.temperature,
                 tools                  = tools
             )
+
+            // Apply thinkingEnabled toggle separately if provided
+            if (updated && req.thinkingEnabled != null) {
+                handler.setThinkingEnabled(name, req.thinkingEnabled)
+            }
 
             if (!updated) {
                 call.respondJson(JsonUtils.toJson(ApiErrorResponse(false, "Failed to update conversation '$name'")), HttpStatusCode.InternalServerError)

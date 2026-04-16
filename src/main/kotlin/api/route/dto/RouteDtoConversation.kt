@@ -23,7 +23,9 @@ data class CreateConversationRequest(
     val topP: Double?,
     val temperature: Double?,
     val tools: List<String>?,
-    val stateless: Boolean?
+    val stateless: Boolean?,
+    /** Whether to enable thinking (chain-of-thought via <|think> token). Defaults to true. */
+    val thinkingEnabled: Boolean?
 )
 
 data class CreateConversationResponse(
@@ -37,7 +39,9 @@ data class CreateConversationResponse(
 
 data class ConversationSummary(
     val name: String,
-    val stateless: Boolean
+    val stateless: Boolean,
+    val agentMode: Boolean,
+    val thinkingEnabled: Boolean
 )
 
 data class ListConversationsResponse(
@@ -74,7 +78,11 @@ data class GetMessagesResponse(
  * @param message The user message text.
  */
 data class SendMessageRequest(
-    val message: String?
+    val message: String?,
+    /**
+     * Per-message thinking override. null = use conversation default.
+     */
+    val thinking: Boolean? = null
 )
 
 data class SendMessageResponse(
@@ -104,7 +112,9 @@ data class UpdateConversationRequest(
     val topK: Int?,
     val topP: Double?,
     val temperature: Double?,
-    val tools: List<String>?
+    val tools: List<String>?,
+    /** Permanently set thinking on/off for this conversation. */
+    val thinkingEnabled: Boolean?
 )
 
 data class UpdateConversationResponse(

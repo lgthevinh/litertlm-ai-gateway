@@ -116,7 +116,10 @@
           <!-- Toolbar -->
           <div class="chat-toolbar">
             <span class="chat-toolbar-title" id="conv-title">Select a conversation</span>
-            <span id="stateless-badge" class="stateless-badge" style="display:none;">stateless</span>
+            <div class="toolbar-spacer"></div>
+            <button class="thinking-toolbar-btn" id="thinking-toolbar-btn" onclick="togglePermanentThinking()" title="Toggle thinking (permanent)" style="display:none;">
+              <span id="thinking-toolbar-label">⚡ Thinking ON</span>
+            </button>
             <span id="ws-status" class="ws-status disconnected">Disconnected</span>
           </div>
 
@@ -140,12 +143,15 @@
               </button>
               <input type="file" id="file-input" accept="image/*,audio/*" multiple style="display:none" onchange="onFilesSelected(this)">
 
+              <!-- Per-message thinking override button -->
+              <button class="chat-think-btn" id="think-btn" title="Override thinking for this message" disabled onclick="togglePerMessageThinking()">⚡</button>
+
               <textarea id="chat-input" placeholder="Message the model…" rows="1" disabled></textarea>
               <button class="chat-send-btn" id="send-btn" onclick="sendMessage()" disabled title="Send (Enter)">
                 <svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
               </button>
             </div>
-            <div class="chat-input-hint">Enter to send · Shift+Enter for newline</div>
+            <div class="chat-input-hint">Enter to send · Shift+Enter for newline · ⚡ to override thinking for one message</div>
           </div>
 
         </div>
@@ -231,35 +237,7 @@
     <h2>New Conversation</h2>
     <div class="field">
       <label>Name</label>
-      <input id="nc-name" type="text" placeholder="e.g. my-chat">
-    </div>
-    <div class="field">
-      <label>Preset</label>
-      <select id="nc-config">
-        <option value="assistant">Assistant — general purpose</option>
-        <option value="coder">Coder — low temperature, precise</option>
-        <option value="concise">Concise — brief answers</option>
-        <option value="creative">Creative — high temperature</option>
-        <option value="custom">Custom system instruction…</option>
-      </select>
-    </div>
-    <div class="field" id="nc-system-field" style="display:none;">
-      <label>System instruction</label>
-      <textarea id="nc-system" placeholder="You are a helpful assistant."></textarea>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label>Top-K <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(optional)</span></label>
-        <input id="nc-topk" type="number" min="1" max="100" placeholder="40">
-      </div>
-      <div class="field">
-        <label>Top-P <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(optional)</span></label>
-        <input id="nc-topp" type="number" min="0" max="1" step="0.01" placeholder="0.95">
-      </div>
-      <div class="field">
-        <label>Temperature <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(optional)</span></label>
-        <input id="nc-temperature" type="number" min="0" max="2" step="0.01" placeholder="0.8">
-      </div>
+      <input id="nc-name" type="text" placeholder="e.g. my-agent">
     </div>
     <div class="field">
       <label>Tools <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(optional)</span></label>
@@ -268,12 +246,12 @@
       </div>
     </div>
     <div class="field">
-      <label class="nc-tool-check" style="gap:8px;">
-        <input type="checkbox" id="nc-stateless">
-        <span>Stateless mode</span>
-      </label>
-      <div id="nc-stateless-warning" style="display:none;margin-top:8px;padding:8px 10px;background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.25);border-radius:6px;font-size:12px;color:#facc15;line-height:1.5;">
-        ⚠️ Messages will <strong>not</strong> be saved. This conversation has no memory between turns.
+      <div class="thinking-toggle-row">
+        <div>
+          <div style="font-size:13px;font-weight:500;">Thinking</div>
+          <div style="font-size:12px;color:var(--text-dim);margin-top:2px;">Model reasons before answering. More accurate, slower.</div>
+        </div>
+        <button class="thinking-toggle-btn active" id="nc-thinking-btn" onclick="toggleNewConvThinking()">ON</button>
       </div>
     </div>
     <div id="nc-err" class="alert alert-error"></div>
@@ -288,36 +266,6 @@
 <div class="modal-backdrop" id="edit-conv-modal">
   <div class="modal">
     <h2>Edit Conversation</h2>
-    <div class="field">
-      <label>Preset <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(leave blank to keep current)</span></label>
-      <select id="ec-config">
-        <option value="">— no change —</option>
-        <option value="assistant">Assistant — general purpose</option>
-        <option value="coder">Coder — low temperature, precise</option>
-        <option value="concise">Concise — brief answers</option>
-        <option value="creative">Creative — high temperature</option>
-        <option value="custom">Custom system instruction…</option>
-        <option value="_clear">Clear custom instruction (revert to preset)</option>
-      </select>
-    </div>
-    <div class="field" id="ec-system-field" style="display:none;">
-      <label>System instruction</label>
-      <textarea id="ec-system" placeholder="You are a helpful assistant."></textarea>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label>Top-K <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(blank = keep)</span></label>
-        <input id="ec-topk" type="number" min="1" max="100" placeholder="e.g. 40">
-      </div>
-      <div class="field">
-        <label>Top-P <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(blank = keep)</span></label>
-        <input id="ec-topp" type="number" min="0" max="1" step="0.01" placeholder="e.g. 0.95">
-      </div>
-      <div class="field">
-        <label>Temperature <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(blank = keep)</span></label>
-        <input id="ec-temperature" type="number" min="0" max="2" step="0.01" placeholder="e.g. 0.8">
-      </div>
-    </div>
     <div class="field">
       <label>Tools <span style="color:var(--text-dim);font-size:11px;font-weight:400;">(check to replace binding, leave all unchecked to keep current)</span></label>
       <div class="nc-tools-row" id="ec-tools-row">

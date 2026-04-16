@@ -15,7 +15,14 @@ package org.thingai.app.aigateway.api.route.dto
 data class WsIncomingMessage(
     val message: String?,
     val images: List<String>? = null,
-    val audio: List<String>? = null
+    val audio: List<String>? = null,
+    /**
+     * Per-message thinking override.
+     * true  = enable thinking for this message only (even if conversation has thinking OFF)
+     * false = disable thinking for this message only (even if conversation has thinking ON)
+     * null  = use conversation's stored thinkingEnabled setting
+     */
+    val thinking: Boolean? = null
 )
 
 /**
@@ -61,4 +68,44 @@ data class WsDoneFrame(
 data class WsErrorFrame(
     val type: String = "error",
     val error: String
+)
+
+// ── Agent frames ──────────────────────────────────────────────────────────────
+
+/**
+ * Sent for each reasoning step — the model's raw thought text for this step.
+ * [stepIndex] is 0-based.
+ */
+data class WsAgentThinkingFrame(
+    val type: String = "agent_thinking",
+    val stepIndex: Int,
+    val text: String
+)
+
+/**
+ * Sent when the agent decides to call a tool.
+ */
+data class WsAgentToolCallFrame(
+    val type: String = "agent_tool_call",
+    val toolName: String,
+    val params: String
+)
+
+/**
+ * Sent when a tool execution completes.
+ */
+data class WsAgentToolResultFrame(
+    val type: String = "agent_tool_result",
+    val toolName: String,
+    val result: String
+)
+
+/**
+ * Sent when the agent loop exhausts [maxSteps] without a final answer.
+ * [lastOutput] is used as the fallback response.
+ */
+data class WsAgentMaxStepsFrame(
+    val type: String = "agent_max_steps",
+    val maxSteps: Int,
+    val lastOutput: String
 )

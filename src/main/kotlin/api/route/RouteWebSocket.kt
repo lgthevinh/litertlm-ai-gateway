@@ -11,6 +11,10 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.takeWhile
 import kotlinx.coroutines.launch
 import org.thingai.app.aigateway.LMApplication
+import org.thingai.app.aigateway.api.route.dto.WsAgentMaxStepsFrame
+import org.thingai.app.aigateway.api.route.dto.WsAgentThinkingFrame
+import org.thingai.app.aigateway.api.route.dto.WsAgentToolCallFrame
+import org.thingai.app.aigateway.api.route.dto.WsAgentToolResultFrame
 import org.thingai.app.aigateway.api.route.dto.WsBusyFrame
 import org.thingai.app.aigateway.api.route.dto.WsDoneFrame
 import org.thingai.app.aigateway.api.route.dto.WsErrorFrame
@@ -18,6 +22,7 @@ import org.thingai.app.aigateway.api.route.dto.WsIncomingMessage
 import org.thingai.app.aigateway.api.route.dto.WsQueuedFrame
 import org.thingai.app.aigateway.api.route.dto.WsTokenFrame
 import org.thingai.app.aigateway.lm.LMService
+import org.thingai.app.aigateway.lm.conversation.ConversationJob
 import org.thingai.app.aigateway.lm.conversation.ConversationJobRegistry
 import org.thingai.app.aigateway.lm.conversation.ConversationWsChunk
 import org.thingai.app.aigateway.lm.attachment.AttachmentType
@@ -73,17 +78,7 @@ fun Route.conversationWebSocket() {
                 val busyJob = ConversationJobRegistry.getBusyJob(name)
                 if (busyJob != null) {
                     sendJson(WsBusyFrame())
-                    // Stream tokens in a child coroutine — does not block incoming loop
-                    val tokenJob = launch {
-                        busyJob.tokenFlow
-                            .takeWhile { !busyJob.completionDeferred.isCompleted }
-                            .collect { sendJson(WsTokenFrame(token = it)) }
-                    }
-                    // Await full reply on the main coroutine
-                    val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
-                    tokenJob.cancelAndJoin()
-                    if (reply != null) sendJson(WsDoneFrame(reply = reply))
-                    else sendError("Inference failed while waiting for result")
+                    streamJobToClient(busyJob)
                 }
                 // Fall through to message loop
             }
@@ -118,7 +113,7 @@ fun Route.conversationWebSocket() {
             }
 
             // Launch detached inference — collect the single Busy/Error signal
-            handler.sendMessage(name, message, attachments).collect { chunk ->
+            handler.sendMessage(name, message, attachments, req.thinking).collect { chunk ->
                 when (chunk) {
                     is ConversationWsChunk.Queued -> {
                         sendJson(WsQueuedFrame(position = chunk.position))
@@ -127,16 +122,7 @@ fun Route.conversationWebSocket() {
                         val busyJob = ConversationJobRegistry.getBusyJob(name)
                         if (busyJob != null) {
                             sendJson(WsBusyFrame())
-                            // Stream tokens in a child coroutine — does not block collect{}
-                            val tokenJob = launch {
-                                busyJob.tokenFlow
-                                    .takeWhile { !busyJob.completionDeferred.isCompleted }
-                                    .collect { sendJson(WsTokenFrame(token = it)) }
-                            }
-                            val reply = runCatching { busyJob.completionDeferred.await() }.getOrNull()
-                            tokenJob.cancelAndJoin()
-                            if (reply != null) sendJson(WsDoneFrame(reply = reply))
-                            else sendError("Inference failed")
+                            streamJobToClient(busyJob)
                         }
                     }
                     is ConversationWsChunk.Error -> sendError(chunk.message)
@@ -148,6 +134,49 @@ fun Route.conversationWebSocket() {
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Streams all output from [job] to the WebSocket client — agent steps, tokens, and final done.
+ *
+ * Launches two child coroutines in parallel:
+ * - One collects [ConversationJob.agentFlow] and sends agent frame types (thinking, tool calls, results)
+ * - One collects [ConversationJob.tokenFlow] and sends token frames
+ *
+ * Both coroutines run until [ConversationJob.completionDeferred] completes, then are cancelled.
+ * Finally sends a [WsDoneFrame] with the full reply.
+ */
+private suspend fun DefaultWebSocketServerSession.streamJobToClient(job: ConversationJob) {
+    val agentJob = launch {
+        job.agentFlow
+            .takeWhile { !job.completionDeferred.isCompleted }
+            .collect { chunk ->
+                when (chunk) {
+                    is ConversationWsChunk.AgentThinking ->
+                        sendJson(WsAgentThinkingFrame(stepIndex = chunk.stepIndex, text = chunk.text))
+                    is ConversationWsChunk.AgentToolCall ->
+                        sendJson(WsAgentToolCallFrame(toolName = chunk.toolName, params = chunk.paramsJson))
+                    is ConversationWsChunk.AgentToolResult ->
+                        sendJson(WsAgentToolResultFrame(toolName = chunk.toolName, result = chunk.result))
+                    is ConversationWsChunk.AgentMaxSteps ->
+                        sendJson(WsAgentMaxStepsFrame(maxSteps = chunk.maxSteps, lastOutput = chunk.lastOutput))
+                    else -> Unit
+                }
+            }
+    }
+
+    val tokenJob = launch {
+        job.tokenFlow
+            .takeWhile { !job.completionDeferred.isCompleted }
+            .collect { sendJson(WsTokenFrame(token = it)) }
+    }
+
+    val reply = runCatching { job.completionDeferred.await() }.getOrNull()
+    agentJob.cancelAndJoin()
+    tokenJob.cancelAndJoin()
+
+    if (reply != null) sendJson(WsDoneFrame(reply = reply))
+    else sendError("Inference failed while waiting for result")
+}
 
 private fun resolveIdentity(token: String): Boolean {
     if (token.isBlank()) return false

@@ -73,13 +73,13 @@ class MessageHandler(
     }
 
     /**
-     * Returns all stored conversations as (name, stateless) pairs, sorted newest-first.
+     * Returns all stored conversations as (name, stateless, agentMode) triples, sorted newest-first.
      */
-    fun listConversations(): List<Pair<String, Boolean>> {
+    fun listConversations(): List<Triple<String, Boolean, Boolean>> {
         return try {
             dao.readAll(LMStoredConversation::class.java)
                 .sortedByDescending { it.createdAt }
-                .map { it.name to it.stateless }
+                .map { Triple(it.name, it.stateless, it.agentMode) }
         } catch (e: DaoException) {
             ILog.e(TAG, "listConversations: DB error: ${e.message}")
             emptyList()
@@ -254,20 +254,43 @@ class MessageHandler(
      * maps them to [Message] objects, and returns a [ConversationConfig] ready for
      * engine re-open.
      *
-     * The [LMStoredConversation.systemInstruction] is applied if present; otherwise
-     * the builtin preset identified by [LMStoredConversation.configLabel] is used as
-     * the base and its sampler is overridden with the stored values.
+     * @param thinkingOverride When non-null, overrides the stored [LMStoredConversation.thinkingEnabled]
+     *                         for this single inference turn only.
      */
-    fun buildConfig(conversationName: String): ConversationConfig? {
+    fun buildConfig(conversationName: String, thinkingOverride: Boolean? = null): ConversationConfig? {
         val record = getConversation(conversationName) ?: return null
-        // Stateless conversations always start with empty history
         val history = if (record.stateless) emptyList() else loadHistory(conversationName)
-        return buildConversationConfig(record, history)
+        val effectiveThinking = thinkingOverride ?: record.thinkingEnabled
+        return buildConversationConfig(record, history, effectiveThinking)
     }
 
     /** Returns true if the conversation is stateless (no history load or persistence). */
     fun isStateless(conversationName: String): Boolean =
         getConversation(conversationName)?.stateless ?: false
+
+    /** Returns true if the conversation uses the gateway-owned agent loop (multi-step reasoning). */
+    fun isAgentMode(conversationName: String): Boolean =
+        getConversation(conversationName)?.agentMode ?: false
+
+    /** Returns true if thinking is currently enabled for this conversation. */
+    fun isThinkingEnabled(conversationName: String): Boolean =
+        getConversation(conversationName)?.thinkingEnabled ?: true
+
+    /**
+     * Toggles [thinkingEnabled] permanently on the stored conversation.
+     * @return false if the conversation does not exist or a DB error occurs.
+     */
+    fun setThinkingEnabled(conversationName: String, enabled: Boolean): Boolean {
+        val record = getConversation(conversationName) ?: return false
+        return try {
+            dao.insertOrUpdate(record.copy(thinkingEnabled = enabled))
+            ILog.i(TAG, "setThinkingEnabled: '$conversationName' thinking=$enabled")
+            true
+        } catch (e: DaoException) {
+            ILog.e(TAG, "setThinkingEnabled: DB error: ${e.message}")
+            false
+        }
+    }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
@@ -299,23 +322,75 @@ class MessageHandler(
      */
     private fun buildConversationConfig(
         record: LMStoredConversation,
-        history: List<Message>
+        history: List<Message>,
+        effectiveThinking: Boolean = record.thinkingEnabled
     ): ConversationConfig {
-        val systemInstruction = record.systemInstruction?.takeIf { it.isNotBlank() }
+        val baseInstruction = record.systemInstruction?.takeIf { it.isNotBlank() }
             ?: builtinInstruction(record.configLabel)
 
-        // Resolve tool names → List<ToolProvider> via ToolRegistry + SDK tool()
-        val toolNames = record.tools
-            ?.split(",")
-            ?.map { it.trim() }
-            ?.filter { it.isNotBlank() }
-            ?: emptyList()
+        val isAgent = record.agentMode
 
-        val toolProviders = if (toolNames.isNotEmpty()) ToolRegistry.getToolProviders(toolNames) else emptyList()
+        val toolProviders = if (!isAgent) {
+            val toolNames = record.tools
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
+            if (toolNames.isNotEmpty()) ToolRegistry.getToolProviders(toolNames) else emptyList()
+        } else {
+            emptyList()
+        }
+
+        // For agent mode, enumerate all tools bound to this conversation and inject
+        // their names + descriptions into the system prompt so the model knows what to call.
+        val toolSection = if (isAgent) {
+            val toolsetNames = record.tools
+                ?.split(",")
+                ?.map { it.trim() }
+                ?.filter { it.isNotBlank() }
+                ?: emptyList()
+
+            val toolDescriptions = toolsetNames.flatMap { setName ->
+                ToolRegistry.get(setName)?.tools?.mapNotNull { openApiTool ->
+                    runCatching {
+                        val json = com.google.gson.JsonParser
+                            .parseString(openApiTool.getToolDescriptionJsonString())
+                            .asJsonObject
+                        val name = json.get("name")?.asString ?: return@mapNotNull null
+                        val desc = json.get("description")?.asString ?: ""
+                        val params = json.getAsJsonObject("parameters")
+                            ?.getAsJsonObject("properties")
+                            ?.keySet()
+                            ?.joinToString(", ")
+                            ?.let { if (it.isNotBlank()) "($it)" else "" }
+                            ?: ""
+                        "- $name$params: $desc"
+                    }.getOrNull()
+                } ?: emptyList()
+            }
+
+            if (toolDescriptions.isNotEmpty()) {
+                "\n\nAvailable tools:\n" + toolDescriptions.joinToString("\n")
+            } else {
+                ""
+            }
+        } else {
+            ""
+        }
+
+        val fullInstruction = baseInstruction + toolSection
+
+        // Prepend <|think> token when thinking is enabled — model enters chain-of-thought mode
+        val systemInstruction = if (effectiveThinking) {
+            "<|think>\n$fullInstruction"
+        } else {
+            fullInstruction
+        }
+
         val autoToolCalling = toolProviders.isNotEmpty()
 
-        if (toolNames.isNotEmpty()) {
-            ILog.d(TAG, "buildConversationConfig: tools=$toolNames resolved=${toolProviders.size} autoToolCalling=$autoToolCalling")
+        if (isAgent) {
+            ILog.d(TAG, "buildConversationConfig: agent mode — thinking=$effectiveThinking tools=${toolSection.isNotBlank()}")
         }
 
         return ConversationConfig(
@@ -340,9 +415,9 @@ class MessageHandler(
             "coder"    -> BuiltinConversationConfig.CODER
             "concise"  -> BuiltinConversationConfig.CONCISE
             "creative" -> BuiltinConversationConfig.CREATIVE
+            "agent"    -> BuiltinConversationConfig.AGENT
             else       -> BuiltinConversationConfig.ASSISTANT
         }
-        // Extract the text from the preset's Contents — toString() returns the plain text
         return preset.systemInstruction?.toString() ?: ""
     }
 }

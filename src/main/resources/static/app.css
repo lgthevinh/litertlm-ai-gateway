@@ -395,8 +395,83 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
   flex-shrink: 0;
 }
 
-/* Stateless dot — conv list item */
-.conv-stateless-dot {
+/* ── Thinking controls ─────────────────────────────────────────────────── */
+
+/* Thinking toggle row in new-conv modal */
+.thinking-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* ON/OFF button in modal */
+.thinking-toggle-btn {
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.thinking-toggle-btn.active {
+  background: rgba(91,106,240,.18);
+  border-color: rgba(91,106,240,.4);
+  color: var(--accent-h);
+}
+
+/* Toolbar thinking button */
+.toolbar-spacer { flex: 1; }
+
+.thinking-toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+  white-space: nowrap;
+  margin-right: 10px;
+}
+.thinking-toolbar-btn.thinking-on {
+  color: var(--accent-h);
+  border-color: rgba(91,106,240,.35);
+  background: rgba(91,106,240,.08);
+}
+.thinking-toolbar-btn.thinking-off {
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+.thinking-toolbar-btn:hover { opacity: .8; }
+
+/* Per-message ⚡ button in input bar */
+.chat-think-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: color .15s, transform .1s;
+  flex-shrink: 0;
+}
+.chat-think-btn:disabled { opacity: .3; cursor: not-allowed; }
+.chat-think-btn.think-active  { color: #facc15; }
+.chat-think-btn.think-inactive { color: var(--text-dim); opacity: .5; }
+.chat-think-btn:not(:disabled):hover { transform: scale(1.15); }
+
+
   display: inline-block;
   width: 6px; height: 6px;
   border-radius: 50%;
@@ -406,6 +481,78 @@ h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
   opacity: .8;
   flex-shrink: 0;
 }
+
+/* Agent badge — toolbar */
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  background: rgba(91,106,240,.15);
+  color: var(--accent-h);
+  border: 1px solid rgba(91,106,240,.3);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+/* Agent dot — conv list item */
+.conv-agent-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent-h);
+  margin-left: 5px;
+  vertical-align: middle;
+  opacity: .8;
+  flex-shrink: 0;
+}
+
+/* Agent step list inside thinking bubble */
+.agent-steps {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-step {
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.agent-step-header {
+  padding: 5px 10px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 500;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-step-header:hover { color: var(--text); }
+
+.agent-step-tool-call .agent-step-header { color: var(--accent-h); }
+.agent-step-tool-result .agent-step-header { color: var(--success); }
+
+.agent-step-body {
+  display: none;
+  padding: 6px 10px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-top: 1px solid var(--border);
+}
+
+.agent-step.expanded .agent-step-body { display: block; }
 .msg-bubble.thinking {
   opacity: .7;
   font-style: italic;
